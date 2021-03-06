@@ -197,6 +197,12 @@ func (c *Conn) Connect(sa unix.Sockaddr) error {
 		return doErr
 	}
 
+	if err == unix.EISCONN {
+		// Darwin reports EISCONN if already connected, but the socket is
+		// established and we don't need to report an error.
+		return nil
+	}
+
 	return os.NewSyscallError(op, err)
 }
 
