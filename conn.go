@@ -145,7 +145,7 @@ func (c *Conn) Accept(flags int) (*Conn, unix.Sockaddr, error) {
 		err error
 	)
 
-	doErr := c.control(func(fd int) error {
+	doErr := c.read(sysAccept, func(fd int) error {
 		// Either accept(2) or accept4(2) depending on the OS.
 		nfd, sa, err = accept(fd, flags|socketFlags)
 		return err
@@ -170,8 +170,10 @@ func (c *Conn) Accept(flags int) (*Conn, unix.Sockaddr, error) {
 
 // Bind wraps bind(2).
 func (c *Conn) Bind(sa unix.Sockaddr) error {
+	const op = "bind"
+
 	var err error
-	doErr := c.control(func(fd int) error {
+	doErr := c.control(op, func(fd int) error {
 		err = unix.Bind(fd, sa)
 		return err
 	})
@@ -179,13 +181,15 @@ func (c *Conn) Bind(sa unix.Sockaddr) error {
 		return doErr
 	}
 
-	return os.NewSyscallError("bind", err)
+	return os.NewSyscallError(op, err)
 }
 
 // Connect wraps connect(2).
 func (c *Conn) Connect(sa unix.Sockaddr) error {
+	const op = "connect"
+
 	var err error
-	doErr := c.write(func(fd int) error {
+	doErr := c.write(op, func(fd int) error {
 		err = unix.Connect(fd, sa)
 		return err
 	})
@@ -193,7 +197,7 @@ func (c *Conn) Connect(sa unix.Sockaddr) error {
 		return doErr
 	}
 
-	return os.NewSyscallError("connect", err)
+	return os.NewSyscallError(op, err)
 }
 
 // Close closes the underlying file descriptor for the Conn, which also causes
@@ -211,7 +215,7 @@ func (c *Conn) Close() error {
 		return nil
 	}
 
-	return c.fd.Close()
+	return os.NewSyscallError("close", c.fd.Close())
 }
 
 // SyscallConn returns a raw network connection. This implements the
@@ -225,7 +229,7 @@ func (c *Conn) Close() error {
 // performed using Conn and the syscall.RawConn do not conflict with each other.
 func (c *Conn) SyscallConn() (syscall.RawConn, error) {
 	if atomic.LoadUint32(&c.closed) != 0 {
-		return nil, unix.EBADF
+		return nil, os.NewSyscallError("syscallconn", unix.EBADF)
 	}
 
 	// TODO(mdlayher): mutex or similar to enforce syscall.RawConn contract of
@@ -235,12 +239,14 @@ func (c *Conn) SyscallConn() (syscall.RawConn, error) {
 
 // Getsockname wraps getsockname(2).
 func (c *Conn) Getsockname() (unix.Sockaddr, error) {
+	const op = "getsockname"
+
 	var (
 		sa  unix.Sockaddr
 		err error
 	)
 
-	doErr := c.control(func(fd int) error {
+	doErr := c.control(op, func(fd int) error {
 		sa, err = unix.Getsockname(fd)
 		return err
 	})
@@ -248,17 +254,19 @@ func (c *Conn) Getsockname() (unix.Sockaddr, error) {
 		return nil, doErr
 	}
 
-	return sa, os.NewSyscallError("getsockname", err)
+	return sa, os.NewSyscallError(op, err)
 }
 
 // GetsockoptInt wraps getsockopt(2) for integer values.
 func (c *Conn) GetsockoptInt(level, opt int) (int, error) {
+	const op = "getsockopt"
+
 	var (
 		value int
 		err   error
 	)
 
-	doErr := c.control(func(fd int) error {
+	doErr := c.control(op, func(fd int) error {
 		value, err = unix.GetsockoptInt(fd, level, opt)
 		return err
 	})
@@ -266,14 +274,15 @@ func (c *Conn) GetsockoptInt(level, opt int) (int, error) {
 		return 0, doErr
 	}
 
-	return value, os.NewSyscallError("getsockopt", err)
+	return value, os.NewSyscallError(op, err)
 }
 
 // Listen wraps listen(2).
 func (c *Conn) Listen(n int) error {
-	var err error
+	const op = "listen"
 
-	doErr := c.control(func(fd int) error {
+	var err error
+	doErr := c.control(op, func(fd int) error {
 		err = unix.Listen(fd, n)
 		return err
 	})
@@ -281,18 +290,20 @@ func (c *Conn) Listen(n int) error {
 		return doErr
 	}
 
-	return os.NewSyscallError("listen", err)
+	return os.NewSyscallError(op, err)
 }
 
 // Recvmsg wraps recvmsg(2).
 func (c *Conn) Recvmsg(p, oob []byte, flags int) (int, int, int, unix.Sockaddr, error) {
+	const op = "recvmsg"
+
 	var (
 		n, oobn, recvflags int
 		from               unix.Sockaddr
 		err                error
 	)
 
-	doErr := c.read(func(fd int) error {
+	doErr := c.read(op, func(fd int) error {
 		n, oobn, recvflags, from, err = unix.Recvmsg(fd, p, oob, flags)
 		return err
 	})
@@ -300,13 +311,15 @@ func (c *Conn) Recvmsg(p, oob []byte, flags int) (int, int, int, unix.Sockaddr, 
 		return 0, 0, 0, nil, doErr
 	}
 
-	return n, oobn, recvflags, from, os.NewSyscallError("recvmsg", err)
+	return n, oobn, recvflags, from, os.NewSyscallError(op, err)
 }
 
 // Sendmsg wraps sendmsg(2).
 func (c *Conn) Sendmsg(p, oob []byte, to unix.Sockaddr, flags int) error {
+	const op = "sendmsg"
+
 	var err error
-	doErr := c.write(func(fd int) error {
+	doErr := c.write(op, func(fd int) error {
 		err = unix.Sendmsg(fd, p, oob, to, flags)
 		return err
 	})
@@ -314,13 +327,15 @@ func (c *Conn) Sendmsg(p, oob []byte, to unix.Sockaddr, flags int) error {
 		return doErr
 	}
 
-	return os.NewSyscallError("sendmsg", err)
+	return os.NewSyscallError(op, err)
 }
 
 // SetsockoptInt wraps setsockopt(2) for integer values.
 func (c *Conn) SetsockoptInt(level, opt, value int) error {
+	const op = "setsockopt"
+
 	var err error
-	doErr := c.control(func(fd int) error {
+	doErr := c.control(op, func(fd int) error {
 		err = unix.SetsockoptInt(fd, level, opt, value)
 		return err
 	})
@@ -328,7 +343,7 @@ func (c *Conn) SetsockoptInt(level, opt, value int) error {
 		return doErr
 	}
 
-	return os.NewSyscallError("setsockopt", err)
+	return os.NewSyscallError(op, err)
 }
 
 // Conn low-level read/write/control functions. These functions mirror the
@@ -342,9 +357,10 @@ func (c *Conn) SetsockoptInt(level, opt, value int) error {
 // responsible for error handling.
 
 // read executes f, a read function, against the associated file descriptor.
-func (c *Conn) read(f func(fd int) error) error {
+// op is used to create an *os.SyscallError if the file descriptor is closed.
+func (c *Conn) read(op string, f func(fd int) error) error {
 	if atomic.LoadUint32(&c.closed) != 0 {
-		return unix.EBADF
+		return os.NewSyscallError(op, unix.EBADF)
 	}
 
 	return c.rc.Read(func(fd uintptr) bool {
@@ -353,9 +369,10 @@ func (c *Conn) read(f func(fd int) error) error {
 }
 
 // write executes f, a write function, against the associated file descriptor.
-func (c *Conn) write(f func(fd int) error) error {
+// op is used to create an *os.SyscallError if the file descriptor is closed.
+func (c *Conn) write(op string, f func(fd int) error) error {
 	if atomic.LoadUint32(&c.closed) != 0 {
-		return unix.EBADF
+		return os.NewSyscallError(op, unix.EBADF)
 	}
 
 	return c.rc.Write(func(fd uintptr) bool {
@@ -363,10 +380,12 @@ func (c *Conn) write(f func(fd int) error) error {
 	})
 }
 
-// control executes f, a control function, against the associated file descriptor.
-func (c *Conn) control(f func(fd int) error) error {
+// control executes f, a control function, against the associated file
+// descriptor. op is used to create an *os.SyscallError if the file descriptor
+// is closed.
+func (c *Conn) control(op string, f func(fd int) error) error {
 	if atomic.LoadUint32(&c.closed) != 0 {
-		return unix.EBADF
+		return os.NewSyscallError(op, unix.EBADF)
 	}
 
 	return c.rc.Control(func(fd uintptr) {

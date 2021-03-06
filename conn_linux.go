@@ -10,8 +10,10 @@ import (
 
 // SetsockoptSockFprog wraps setsockopt(2) for unix.SockFprog values.
 func (c *Conn) SetsockoptSockFprog(level, opt int, fprog *unix.SockFprog) error {
+	const op = "setsockopt"
+
 	var err error
-	doErr := c.control(func(fd int) error {
+	doErr := c.control(op, func(fd int) error {
 		err = unix.SetsockoptSockFprog(fd, level, opt, fprog)
 		return err
 	})
@@ -19,5 +21,5 @@ func (c *Conn) SetsockoptSockFprog(level, opt int, fprog *unix.SockFprog) error 
 		return doErr
 	}
 
-	return os.NewSyscallError("setsockopt", err)
+	return os.NewSyscallError(op, err)
 }
