@@ -26,6 +26,26 @@ type Conn struct {
 	rc syscall.RawConn
 }
 
+// High-level methods which provide convenience over raw system calls.
+
+// Close closes the underlying file descriptor for the Conn, which also causes
+// all in-flight I/O operations to immediately unblock and return errors. Any
+// subsequent uses of Conn will result in EBADF.
+func (c *Conn) Close() error {
+	// The caller has expressed an intent to close the socket, so immediately
+	// increment s.closed to force further calls to result in EBADF before also
+	// closing the file descriptor to unblock any outstanding operations.
+	//
+	// Because other operations simply check for s.closed != 0, we will permit
+	// double Close, which would increment s.closed beyond 1.
+	if atomic.AddUint32(&c.closed, 1) != 1 {
+		// Multiple Close calls.
+		return nil
+	}
+
+	return os.NewSyscallError("close", c.fd.Close())
+}
+
 // Read implements io.Reader by reading directly from the underlying file
 // descriptor.
 func (c *Conn) Read(b []byte) (int, error) { return c.fd.Read(b) }
@@ -42,6 +62,53 @@ func (c *Conn) SetReadDeadline(t time.Time) error { return c.fd.SetReadDeadline(
 
 // SetWriteDeadline sets the write deadline associated with the Conn.
 func (c *Conn) SetWriteDeadline(t time.Time) error { return c.fd.SetWriteDeadline(t) }
+
+// ReadBuffer gets the size of the operating system's receive buffer associated
+// with the Conn.
+func (c *Conn) ReadBuffer() (int, error) {
+	return c.GetsockoptInt(unix.SOL_SOCKET, unix.SO_RCVBUF)
+}
+
+// WriteBuffer gets the size of the operating system's transmit buffer
+// associated with the Conn.
+func (c *Conn) WriteBuffer() (int, error) {
+	return c.GetsockoptInt(unix.SOL_SOCKET, unix.SO_SNDBUF)
+}
+
+// SetReadBuffer sets the size of the operating system's receive buffer
+// associated with the Conn.
+//
+// When called with elevated privileges on Linux, the SO_RCVBUFFORCE option will
+// be used to override operating system limits. Otherwise SO_RCVBUF is used
+// (which obeys operating system limits).
+func (c *Conn) SetReadBuffer(bytes int) error { return c.setReadBuffer(bytes) }
+
+// SetWriteBuffer sets the size of the operating system's transmit buffer
+// associated with the Conn.
+//
+// When called with elevated privileges on Linux, the SO_SNDBUFFORCE option will
+// be used to override operating system limits. Otherwise SO_SNDBUF is used
+// (which obeys operating system limits).
+func (c *Conn) SetWriteBuffer(bytes int) error { return c.setWriteBuffer(bytes) }
+
+// SyscallConn returns a raw network connection. This implements the
+// syscall.Conn interface.
+//
+// SyscallConn is intended for advanced use cases, such as getting and setting
+// arbitrary socket options using the socket's file descriptor. If possible,
+// those operations should be performed using methods on Conn instead.
+//
+// Once invoked, it is the caller's responsibility to ensure that operations
+// performed using Conn and the syscall.RawConn do not conflict with each other.
+func (c *Conn) SyscallConn() (syscall.RawConn, error) {
+	if atomic.LoadUint32(&c.closed) != 0 {
+		return nil, os.NewSyscallError("syscallconn", unix.EBADF)
+	}
+
+	// TODO(mdlayher): mutex or similar to enforce syscall.RawConn contract of
+	// FD remaining valid for duration of calls?
+	return c.rc, nil
+}
 
 // Socket wraps the socket(2) system call to produce a Conn. domain, typ, and
 // proto are passed directly to socket(2), and name should be a unique name for
@@ -129,6 +196,8 @@ func newConn(fd int, name string) (*Conn, error) {
 	}, nil
 }
 
+// Low-level methods which provide raw system call access.
+
 // Accept wraps accept(2) or accept4(2) depending on the operating system, but
 // returns a Conn for the accepted connection rather than a raw file descriptor.
 //
@@ -204,43 +273,6 @@ func (c *Conn) Connect(sa unix.Sockaddr) error {
 	}
 
 	return os.NewSyscallError(op, err)
-}
-
-// Close closes the underlying file descriptor for the Conn, which also causes
-// all in-flight I/O operations to immediately unblock and return errors. Any
-// subsequent uses of Conn will result in EBADF.
-func (c *Conn) Close() error {
-	// The caller has expressed an intent to close the socket, so immediately
-	// increment s.closed to force further calls to result in EBADF before also
-	// closing the file descriptor to unblock any outstanding operations.
-	//
-	// Because other operations simply check for s.closed != 0, we will permit
-	// double Close, which would increment s.closed beyond 1.
-	if atomic.AddUint32(&c.closed, 1) != 1 {
-		// Multiple Close calls.
-		return nil
-	}
-
-	return os.NewSyscallError("close", c.fd.Close())
-}
-
-// SyscallConn returns a raw network connection. This implements the
-// syscall.Conn interface.
-//
-// SyscallConn is intended for advanced use cases, such as getting and setting
-// arbitrary socket options using the socket's file descriptor. If possible,
-// those operations should be performed using methods on Conn instead.
-//
-// Once invoked, it is the caller's responsibility to ensure that operations
-// performed using Conn and the syscall.RawConn do not conflict with each other.
-func (c *Conn) SyscallConn() (syscall.RawConn, error) {
-	if atomic.LoadUint32(&c.closed) != 0 {
-		return nil, os.NewSyscallError("syscallconn", unix.EBADF)
-	}
-
-	// TODO(mdlayher): mutex or similar to enforce syscall.RawConn contract of
-	// FD remaining valid for duration of calls?
-	return c.rc, nil
 }
 
 // Getsockname wraps getsockname(2).
