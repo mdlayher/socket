@@ -10,7 +10,7 @@ import (
 )
 
 // A Conn is a low-level network connection which integrates with Go's runtime
-// network poller to provide synchronous I/O and deadline support.
+// network poller to provide asynchronous I/O and deadline support.
 type Conn struct {
 	// Indicates whether or not Conn.Close has been called. Must be accessed
 	// atomically. Atomics definitions must come first in the Conn struct.
