@@ -1,4 +1,5 @@
-//+build !freebsd,!linux
+//go:build !freebsd && !linux
+// +build !freebsd,!linux
 
 package socket
 
