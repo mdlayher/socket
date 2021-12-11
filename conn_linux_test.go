@@ -4,10 +4,17 @@
 package socket_test
 
 import (
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"runtime"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/mdlayher/socket"
+	"github.com/mdlayher/socket/internal/sockettest"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
 )
 
@@ -15,7 +22,7 @@ func TestLinuxConnBuffers(t *testing.T) {
 	// This test isn't necessarily Linux-specific but it's easiest to verify on
 	// Linux because we can rely on the kernel's documented buffer size
 	// manipulation behavior.
-	c, err := socket.Socket(unix.AF_INET, unix.SOCK_STREAM, 0, "tcpv4")
+	c, err := socket.Socket(unix.AF_INET, unix.SOCK_STREAM, 0, "tcpv4", nil)
 	if err != nil {
 		t.Fatalf("failed to open socket: %v", err)
 	}
@@ -58,5 +65,64 @@ func TestLinuxConnBuffers(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, snd); diff != "" {
 		t.Fatalf("unexpected write buffer size (-want +got):\n%s", diff)
+	}
+}
+
+func TestLinuxNetworkNamespaces(t *testing.T) {
+	l, err := sockettest.Listen(0, nil)
+	if err != nil {
+		t.Fatalf("failed to create listener: %v", err)
+	}
+	defer l.Close()
+
+	addrC := make(chan net.Addr, 1)
+
+	var eg errgroup.Group
+	eg.Go(func() error {
+		// We are poisoning this thread by creating a new anonymous network
+		// namespace. Do not unlock the OS thread so that the runtime will kill
+		// this thread when the goroutine exits.
+		runtime.LockOSThread()
+
+		if err := unix.Unshare(unix.CLONE_NEWNET); err != nil {
+			// Explicit wrap to check for permission denied.
+			return fmt.Errorf("failed to unshare network namespace: %w", err)
+		}
+
+		ns, err := socket.ThreadNetNS()
+		if err != nil {
+			return fmt.Errorf("failed to get listener thread's network namespace: %v", err)
+		}
+
+		// This OS thread has been moved to a different network namespace and
+		// thus we should also be able to start a listener on the same port.
+		l, err := sockettest.Listen(
+			l.Addr().(*net.TCPAddr).Port,
+			&socket.Config{NetNS: ns.FD()},
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create listener in network namespace: %v", err)
+		}
+		defer l.Close()
+
+		addrC <- l.Addr()
+		return nil
+	})
+
+	if err := eg.Wait(); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			t.Skipf("skipping, permission denied: %v", err)
+		}
+
+		t.Fatalf("failed to run listener thread: %v", err)
+	}
+
+	select {
+	case addr := <-addrC:
+		if diff := cmp.Diff(l.Addr(), addr); diff != "" {
+			t.Fatalf("unexpected network address (-want +got):\n%s", diff)
+		}
+	default:
+		t.Fatal("listener thread did not return its local address")
 	}
 }

@@ -26,6 +26,29 @@ type Conn struct {
 	rc syscall.RawConn
 }
 
+// A Config contains options for a Conn.
+type Config struct {
+	// NetNS specifies the Linux network namespace the Conn will operate in.
+	// This option is unsupported on other operating systems.
+	//
+	// If set (non-zero), Conn will enter the specified network namespace and an
+	// error will occur in Socket if the operation fails.
+	//
+	// If not set (zero), a best-effort attempt will be made to enter the
+	// network namespace of the calling thread: this means that any changes made
+	// to the calling thread's network namespace will also be reflected in Conn.
+	// If this operation fails (due to lack of permissions or because network
+	// namespaces are disabled by kernel configuration), Socket will not return
+	// an error, and the Conn will operate in the default network namespace of
+	// the process. This enables non-privileged use of Conn in applications
+	// which do not require elevated privileges.
+	//
+	// Entering a network namespace is a privileged operation (root or
+	// CAP_SYS_ADMIN are required), and most applications should leave this set
+	// to 0.
+	NetNS int
+}
+
 // High-level methods which provide convenience over raw system calls.
 
 // Close closes the underlying file descriptor for the Conn, which also causes
@@ -114,10 +137,30 @@ func (c *Conn) SyscallConn() (syscall.RawConn, error) {
 // proto are passed directly to socket(2), and name should be a unique name for
 // the socket type such as "netlink" or "vsock".
 //
+// The cfg parameter specifies optional configuration for the Conn. If nil, no
+// additional configuration will be applied.
+//
 // If the operating system supports SOCK_CLOEXEC and SOCK_NONBLOCK, they are
 // automatically applied to typ to mirror the standard library's socket flag
 // behaviors.
-func Socket(domain, typ, proto int, name string) (*Conn, error) {
+func Socket(domain, typ, proto int, name string, cfg *Config) (*Conn, error) {
+	if cfg == nil {
+		cfg = &Config{}
+	}
+
+	if cfg.NetNS == 0 {
+		// Non-Linux or no network namespace.
+		return socket(domain, typ, proto, name)
+	}
+
+	// Linux only: create Conn in the specified network namespace.
+	return withNetNS(cfg.NetNS, func() (*Conn, error) {
+		return socket(domain, typ, proto, name)
+	})
+}
+
+// socket is the internal, cross-platform entry point for socket(2).
+func socket(domain, typ, proto int, name string) (*Conn, error) {
 	var (
 		fd  int
 		err error
