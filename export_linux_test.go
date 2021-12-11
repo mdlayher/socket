@@ -1,3 +1,6 @@
+//go:build linux
+// +build linux
+
 package socket
 
 // A NetNS is an exported wrapper for netNS for tests.
