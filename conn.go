@@ -196,9 +196,11 @@ func socket(domain, typ, proto int, name string) (*Conn, error) {
 			// comment in syscall/exec_unix.go.
 			syscall.ForkLock.RLock()
 			fd, err = unix.Socket(domain, typ, proto)
-			if err == nil {
-				unix.CloseOnExec(fd)
+			if err != nil {
+				syscall.ForkLock.RUnlock()
+				return nil, os.NewSyscallError("socket", err)
 			}
+			unix.CloseOnExec(fd)
 			syscall.ForkLock.RUnlock()
 
 			return newConn(fd, name)
