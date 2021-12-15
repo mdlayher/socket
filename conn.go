@@ -434,7 +434,7 @@ func (c *Conn) Sendmsg(p, oob []byte, to unix.Sockaddr, flags int) error {
 	return os.NewSyscallError(op, err)
 }
 
-// Sendto wraps Sendto(2).
+// Sendto wraps sendto(2).
 func (c *Conn) Sendto(b []byte, to unix.Sockaddr, flags int) error {
 	const op = "sendto"
 
@@ -457,6 +457,22 @@ func (c *Conn) SetsockoptInt(level, opt, value int) error {
 	var err error
 	doErr := c.control(op, func(fd int) error {
 		err = unix.SetsockoptInt(fd, level, opt, value)
+		return err
+	})
+	if doErr != nil {
+		return doErr
+	}
+
+	return os.NewSyscallError(op, err)
+}
+
+// Shutdown wraps shutdown(2).
+func (c *Conn) Shutdown(how int) error {
+	const op = "shutdown"
+
+	var err error
+	doErr := c.write(op, func(fd int) error {
+		err = unix.Shutdown(fd, how)
 		return err
 	})
 	if doErr != nil {
