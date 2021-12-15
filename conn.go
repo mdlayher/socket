@@ -471,7 +471,7 @@ func (c *Conn) Shutdown(how int) error {
 	const op = "shutdown"
 
 	var err error
-	doErr := c.write(op, func(fd int) error {
+	doErr := c.control(op, func(fd int) error {
 		err = unix.Shutdown(fd, how)
 		return err
 	})
