@@ -312,8 +312,10 @@ func (c *Conn) Connect(sa unix.Sockaddr) error {
 	}
 
 	if err == unix.EISCONN {
-		// Darwin reports EISCONN if already connected, but the socket is
-		// established and we don't need to report an error.
+		// EISCONN is reported if the socket is already established and should
+		// not be treated as an error.
+		//  - Darwin reports this for at least TCP sockets
+		//  - Linux reports this for at least AF_VSOCK sockets
 		return nil
 	}
 
@@ -537,17 +539,17 @@ func (c *Conn) control(op string, f func(fd int) error) error {
 
 // ready indicates readiness based on the value of err.
 func ready(err error) bool {
-	// When a socket is in non-blocking mode, we might see EAGAIN or
-	// EINPROGRESS. In that case, return false to let the poller wait for
-	// readiness. See the source code for internal/poll.FD.RawRead for more
-	// details.
+	// When a socket is in non-blocking mode, we might see a variety of errors:
+	//  - EAGAIN: most common case for a socket read not being ready
+	//  - EALREADY: reported on connect after EINPROGRESS for AF_VSOCK at least
+	//  - EINPROGRESS: reported by some sockets when first calling connect
+	//  - EINTR: system call interrupted, more frequently occurs in Go 1.14+
+	//    because goroutines can be asynchronously preempted
 	//
-	// Starting in Go 1.14, goroutines are asynchronously preemptible. The 1.14
-	// release notes indicate that applications should expect to see EINTR more
-	// often on slow system calls (like recvmsg while waiting for input), so we
-	// must handle that case as well.
+	// Return false to let the poller wait for readiness. See the source code
+	// for internal/poll.FD.RawRead for more details.
 	switch err {
-	case unix.EAGAIN, unix.EINTR, unix.EINPROGRESS:
+	case unix.EAGAIN, unix.EALREADY, unix.EINPROGRESS, unix.EINTR:
 		// Not ready.
 		return false
 	default:
