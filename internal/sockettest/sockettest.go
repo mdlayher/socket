@@ -25,16 +25,22 @@ func Listen(port int, cfg *socket.Config) (net.Listener, error) {
 		return nil, fmt.Errorf("failed to open socket: %v", err)
 	}
 
+	// Be sure to close the Conn if any of the system calls fail before we
+	// return the Conn to the caller.
+
 	if err := c.Bind(&unix.SockaddrInet6{Port: port}); err != nil {
+		_ = c.Close()
 		return nil, fmt.Errorf("failed to bind: %v", err)
 	}
 
 	if err := c.Listen(unix.SOMAXCONN); err != nil {
+		_ = c.Close()
 		return nil, fmt.Errorf("failed to listen: %v", err)
 	}
 
 	sa, err := c.Getsockname()
 	if err != nil {
+		_ = c.Close()
 		return nil, fmt.Errorf("failed to getsockname: %v", err)
 	}
 
@@ -55,6 +61,8 @@ func (l *listener) Accept() (net.Conn, error) {
 
 	lsa, err := c.Getsockname()
 	if err != nil {
+		// Don't leak the Conn if the system call fails.
+		_ = c.Close()
 		return nil, err
 	}
 
@@ -87,12 +95,17 @@ func Dial(addr net.Addr, cfg *socket.Config) (net.Conn, error) {
 	copy(sa.Addr[:], ta.IP)
 	sa.Port = ta.Port
 
+	// Be sure to close the Conn if any of the system calls fail before we
+	// return the Conn to the caller.
+
 	if err := c.Connect(&sa); err != nil {
+		_ = c.Close()
 		return nil, fmt.Errorf("failed to connect: %v", err)
 	}
 
 	lsa, err := c.Getsockname()
 	if err != nil {
+		_ = c.Close()
 		return nil, err
 	}
 
