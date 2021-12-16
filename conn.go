@@ -69,6 +69,14 @@ func (c *Conn) Close() error {
 	return os.NewSyscallError("close", c.fd.Close())
 }
 
+// CloseRead shuts down the reading side of the Conn. Most callers should just
+// use Close.
+func (c *Conn) CloseRead() error { return c.Shutdown(unix.SHUT_RD) }
+
+// CloseWrite shuts down the writing side of the Conn. Most callers should just
+// use Close.
+func (c *Conn) CloseWrite() error { return c.Shutdown(unix.SHUT_WR) }
+
 // Read implements io.Reader by reading directly from the underlying file
 // descriptor.
 func (c *Conn) Read(b []byte) (int, error) { return c.fd.Read(b) }
