@@ -130,15 +130,21 @@ func testCloseReadWrite(t *testing.T, c1, c2 net.Conn) {
 	go func() {
 		defer wg.Done()
 
-		// Reading succeeds at first but should result in an EOF error after
-		// closing the read side of the net.Conn.
+		// Reading succeeds at first but should result in a permanent error
+		// after closing the read side of the net.Conn.
 		if err := chunkedCopy(ioutil.Discard, cc2); err != nil {
 			t.Errorf("unexpected initial cc2.Read error: %v", err)
 		}
 		if err := cc2.CloseRead(); err != nil {
 			t.Errorf("unexpected cc2.CloseRead error: %v", err)
 		}
-		if _, err := cc2.Read(make([]byte, 64)); err != io.EOF {
+		_, err := cc2.Read(make([]byte, 64))
+		if err == io.EOF {
+			// Linux reports EOF.
+			return
+		}
+		// Other operating systems may report net.Error.
+		if nerr, ok := err.(net.Error); !ok || nerr.Temporary() {
 			t.Errorf("unexpected final cc2.Read error: %v", err)
 		}
 	}()
