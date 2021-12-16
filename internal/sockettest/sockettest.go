@@ -117,6 +117,8 @@ func Dial(addr net.Addr, cfg *socket.Config) (net.Conn, error) {
 }
 
 func (c *conn) Close() error                       { return c.c.Close() }
+func (c *conn) CloseRead() error                   { return c.c.CloseRead() }
+func (c *conn) CloseWrite() error                  { return c.c.CloseWrite() }
 func (c *conn) LocalAddr() net.Addr                { return c.local }
 func (c *conn) RemoteAddr() net.Addr               { return c.remote }
 func (c *conn) SetDeadline(t time.Time) error      { return c.c.SetDeadline(t) }
