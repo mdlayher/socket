@@ -5,6 +5,7 @@ import (
 	"io"
 	"io/ioutil"
 	"net"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -92,6 +93,11 @@ func timeoutWrapper(t *testing.T, mp nettest.MakePipe, f connTester) {
 // testCloseReadWrite tests that net.Conns which also implement the optional
 // CloseRead and CloseWrite methods can be half-closed correctly.
 func testCloseReadWrite(t *testing.T, c1, c2 net.Conn) {
+	// TODO(mdlayher): investigate why Mac/Windows errors are so different.
+	if runtime.GOOS != "linux" {
+		t.Skip("skipping, not supported on non-Linux platforms")
+	}
+
 	type closerConn interface {
 		net.Conn
 		CloseRead() error
@@ -130,21 +136,15 @@ func testCloseReadWrite(t *testing.T, c1, c2 net.Conn) {
 	go func() {
 		defer wg.Done()
 
-		// Reading succeeds at first but should result in a permanent error
-		// after closing the read side of the net.Conn.
+		// Reading succeeds at first but should result in an EOF error after
+		// closing the read side of the net.Conn.
 		if err := chunkedCopy(ioutil.Discard, cc2); err != nil {
 			t.Errorf("unexpected initial cc2.Read error: %v", err)
 		}
 		if err := cc2.CloseRead(); err != nil {
 			t.Errorf("unexpected cc2.CloseRead error: %v", err)
 		}
-		_, err := cc2.Read(make([]byte, 64))
-		if err == io.EOF {
-			// Linux reports EOF.
-			return
-		}
-		// Other operating systems may report net.Error.
-		if nerr, ok := err.(net.Error); !ok || nerr.Temporary() {
+		if _, err := cc2.Read(make([]byte, 64)); err != io.EOF {
 			t.Errorf("unexpected final cc2.Read error: %v", err)
 		}
 	}()
