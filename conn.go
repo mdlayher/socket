@@ -310,16 +310,65 @@ func (c *Conn) Bind(sa unix.Sockaddr) error {
 func (c *Conn) Connect(sa unix.Sockaddr) error {
 	const op = "connect"
 
-	var err error
+	// TODO(mdlayher): it would seem that trying to connect to unbound vsock
+	// listeners by calling Connect multiple times results in ECONNRESET for the
+	// first and nil error for subsequent calls. Do we need to memoize the
+	// error? Check what the stdlib behavior is.
+
+	var (
+		// Track progress between invocations of the write closure. We don't
+		// have an explicit WaitWrite call like internal/poll does, so we have
+		// to wait until the runtime calls the closure again to indicate we can
+		// write.
+		progress uint32
+
+		// Capture closure error.
+		err error
+	)
+
 	doErr := c.write(op, func(fd int) error {
-		err = unix.Connect(fd, sa)
-		return err
+		switch atomic.AddUint32(&progress, 1) {
+		case 1:
+			// First call: initiate connect.
+			return unix.Connect(fd, sa)
+		default:
+			// Subsequent calls: the runtime network poller indicates fd is
+			// writable. Check for errno.
+			errno, gerr := c.GetsockoptInt(unix.SOL_SOCKET, unix.SO_ERROR)
+			if err != nil {
+				return gerr
+			}
+			if errno != 0 {
+				// Connection is still not ready or failed. If errno indicates
+				// the socket is not ready, we will wait for the next write
+				// event. Otherwise we propagate this errno back to the as a
+				// permanent error.
+				uerr := unix.Errno(errno)
+				err = uerr
+				return uerr
+			}
+
+			// According to internal/poll, it's possible for the runtime network
+			// poller to spuriously wake us and return errno 0 for SO_ERROR.
+			// Make sure we are actually connected to a peer.
+			if _, err := c.Getpeername(); err != nil {
+				// internal/poll unconditionally goes back to WaitWrite.
+				// Synthesize an error that will do the same for us.
+				return unix.EAGAIN
+			}
+
+			// Connection complete.
+			return nil
+		}
 	})
 	if doErr != nil {
 		return doErr
 	}
 
 	if err == unix.EISCONN {
+		// TODO(mdlayher): is this block obsolete with the addition of the
+		// getsockopt SO_ERROR check above?
+		//
 		// EISCONN is reported if the socket is already established and should
 		// not be treated as an error.
 		//  - Darwin reports this for at least TCP sockets
@@ -341,6 +390,26 @@ func (c *Conn) Getsockname() (unix.Sockaddr, error) {
 
 	doErr := c.control(op, func(fd int) error {
 		sa, err = unix.Getsockname(fd)
+		return err
+	})
+	if doErr != nil {
+		return nil, doErr
+	}
+
+	return sa, os.NewSyscallError(op, err)
+}
+
+// Getpeername wraps getpeername(2).
+func (c *Conn) Getpeername() (unix.Sockaddr, error) {
+	const op = "getpeername"
+
+	var (
+		sa  unix.Sockaddr
+		err error
+	)
+
+	doErr := c.control(op, func(fd int) error {
+		sa, err = unix.Getpeername(fd)
 		return err
 	})
 	if doErr != nil {
@@ -549,7 +618,6 @@ func (c *Conn) control(op string, f func(fd int) error) error {
 func ready(err error) bool {
 	// When a socket is in non-blocking mode, we might see a variety of errors:
 	//  - EAGAIN: most common case for a socket read not being ready
-	//  - EALREADY: reported on connect after EINPROGRESS for AF_VSOCK at least
 	//  - EINPROGRESS: reported by some sockets when first calling connect
 	//  - EINTR: system call interrupted, more frequently occurs in Go 1.14+
 	//    because goroutines can be asynchronously preempted
@@ -557,7 +625,7 @@ func ready(err error) bool {
 	// Return false to let the poller wait for readiness. See the source code
 	// for internal/poll.FD.RawRead for more details.
 	switch err {
-	case unix.EAGAIN, unix.EALREADY, unix.EINPROGRESS, unix.EINTR:
+	case unix.EAGAIN, unix.EINPROGRESS, unix.EINTR:
 		// Not ready.
 		return false
 	default:

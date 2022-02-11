@@ -100,7 +100,8 @@ func Dial(addr net.Addr, cfg *socket.Config) (net.Conn, error) {
 
 	if err := c.Connect(&sa); err != nil {
 		_ = c.Close()
-		return nil, fmt.Errorf("failed to connect: %v", err)
+		// Don't wrap, we want the raw error for tests.
+		return nil, err
 	}
 
 	lsa, err := c.Getsockname()

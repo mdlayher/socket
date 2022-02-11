@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"io"
 	"io/ioutil"
+	"math"
 	"net"
+	"os"
 	"runtime"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/mdlayher/socket/internal/sockettest"
 	"golang.org/x/net/nettest"
+	"golang.org/x/sys/unix"
 )
 
 func TestConn(t *testing.T) {
@@ -19,6 +23,24 @@ func TestConn(t *testing.T) {
 
 	// Our own extensions to TestConn.
 	t.Run("CloseReadWrite", func(t *testing.T) { timeoutWrapper(t, makePipe, testCloseReadWrite) })
+}
+
+func TestDialTCPNoListener(t *testing.T) {
+	// See https://github.com/mdlayher/vsock/issues/47 and
+	// https://github.com/lxc/lxd/pull/9894 for context on this test.
+	//
+	//
+	// Given a (hopefully) non-existent listener on localhost, expect
+	// ECONNREFUSED.
+	_, err := sockettest.Dial(&net.TCPAddr{
+		IP:   net.IPv6loopback,
+		Port: math.MaxUint16,
+	}, nil)
+
+	want := os.NewSyscallError("connect", unix.ECONNREFUSED)
+	if diff := cmp.Diff(want, err); diff != "" {
+		t.Fatalf("unexpected connect error (-want +got):\n%s", diff)
+	}
 }
 
 // Use our TCP net.Listener and net.Conn implementations backed by *socket.Conn

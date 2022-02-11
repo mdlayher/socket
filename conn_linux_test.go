@@ -6,6 +6,7 @@ package socket_test
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"runtime"
@@ -124,5 +125,27 @@ func TestLinuxNetworkNamespaces(t *testing.T) {
 		}
 	default:
 		t.Fatal("listener thread did not return its local address")
+	}
+}
+
+func TestLinuxDialVsockNoListener(t *testing.T) {
+	// See https://github.com/mdlayher/vsock/issues/47 and
+	// https://github.com/lxc/lxd/pull/9894 for context on this test.
+	c, err := socket.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0, "vsock", nil)
+	if err != nil {
+		t.Fatalf("failed to open socket: %v", err)
+	}
+	defer c.Close()
+
+	// Given a (hopefully) non-existent listener on localhost, expect
+	// ECONNRESET.
+	err = c.Connect(&unix.SockaddrVM{
+		CID:  unix.VMADDR_CID_LOCAL,
+		Port: math.MaxUint32,
+	})
+
+	want := os.NewSyscallError("connect", unix.ECONNRESET)
+	if diff := cmp.Diff(want, err); diff != "" {
+		t.Fatalf("unexpected connect error (-want +got):\n%s", diff)
 	}
 }
