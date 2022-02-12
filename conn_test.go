@@ -2,6 +2,7 @@ package socket_test
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"math"
@@ -15,6 +16,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/mdlayher/socket/internal/sockettest"
 	"golang.org/x/net/nettest"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
 )
 
@@ -40,6 +42,61 @@ func TestDialTCPNoListener(t *testing.T) {
 	want := os.NewSyscallError("connect", unix.ECONNREFUSED)
 	if diff := cmp.Diff(want, err); diff != "" {
 		t.Fatalf("unexpected connect error (-want +got):\n%s", diff)
+	}
+}
+
+func TestFileConn(t *testing.T) {
+	// Use raw system calls to set up the socket since we assume anything being
+	// passed into a FileConn is set up by another system, such as systemd's
+	// socket activation.
+	fd, err := unix.Socket(unix.AF_INET6, unix.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("failed to open socket: %v", err)
+	}
+
+	// Bind to loopback, any available port.
+	sa := &unix.SockaddrInet6{Addr: [16]byte{15: 0x01}}
+	if err := unix.Bind(fd, sa); err != nil {
+		t.Fatalf("failed to bind: %v", err)
+	}
+
+	if err := unix.Listen(fd, unix.SOMAXCONN); err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+
+	// The socket should be ready, create a blocking file which is ready to be
+	// passed into FileConn via the FileListener helper.
+	f := os.NewFile(uintptr(fd), "tcpv6-listener")
+	defer f.Close()
+
+	l, err := sockettest.FileListener(f)
+	if err != nil {
+		t.Fatalf("failed to open file listener: %v", err)
+	}
+	defer l.Close()
+
+	// To exercise the listener, attempt to accept and then immediately close a
+	// single TCPv6 connection. Dial to the listener from the main goroutine and
+	// wait for everything to finish.
+	var eg errgroup.Group
+	eg.Go(func() error {
+		c, err := l.Accept()
+		if err != nil {
+			return fmt.Errorf("failed to accept: %v", err)
+		}
+
+		_ = c.Close()
+		return nil
+	})
+
+	c, err := net.Dial(l.Addr().Network(), l.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to dial listener: %v", err)
+	}
+	_ = c.Close()
+
+	if err := eg.Wait(); err != nil {
+		t.Fatalf("failed to wait for listener goroutine: %v", err)
 	}
 }
 

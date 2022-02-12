@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"time"
 
 	"github.com/mdlayher/socket"
@@ -36,6 +37,26 @@ func Listen(port int, cfg *socket.Config) (net.Listener, error) {
 	if err := c.Listen(unix.SOMAXCONN); err != nil {
 		_ = c.Close()
 		return nil, fmt.Errorf("failed to listen: %v", err)
+	}
+
+	sa, err := c.Getsockname()
+	if err != nil {
+		_ = c.Close()
+		return nil, fmt.Errorf("failed to getsockname: %v", err)
+	}
+
+	return &listener{
+		addr: newTCPAddr(sa),
+		c:    c,
+	}, nil
+}
+
+// FileListener creates an IPv6 TCP net.Listener backed by a *socket.Conn from
+// the input file.
+func FileListener(f *os.File) (net.Listener, error) {
+	c, err := socket.FileConn(f, "tcpv6-server")
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file conn: %v", err)
 	}
 
 	sa, err := c.Getsockname()

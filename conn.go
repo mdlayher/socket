@@ -219,6 +219,42 @@ func socket(domain, typ, proto int, name string) (*Conn, error) {
 	}
 }
 
+// FileConn returns a copy of the network connection corresponding to the open
+// file. It is the caller's responsibility to close the file when finished.
+// Closing the Conn does not affect the File, and closing the File does not
+// affect the Conn.
+func FileConn(f *os.File, name string) (*Conn, error) {
+	// First we'll try to do fctnl(2) with F_DUPFD_CLOEXEC because we can dup
+	// the file descriptor and set the flag in one syscall.
+	fd, err := unix.FcntlInt(f.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+	switch err {
+	case nil:
+		// OK, ready to set up non-blocking I/O.
+		return newConn(fd, name)
+	case unix.EINVAL:
+		// The kernel rejected our fcntl(2), fall back to separate dup(2) and
+		// setting close on exec.
+		//
+		// Mirror what the standard library does when creating file descriptors:
+		// avoid racing a fork/exec with the creation of new file descriptors,
+		// so that child processes do not inherit socket file descriptors
+		// unexpectedly.
+		syscall.ForkLock.RLock()
+		fd, err := unix.Dup(fd)
+		if err != nil {
+			syscall.ForkLock.RUnlock()
+			return nil, os.NewSyscallError("dup", err)
+		}
+		unix.CloseOnExec(fd)
+		syscall.ForkLock.RUnlock()
+
+		return newConn(fd, name)
+	default:
+		// Any other errors.
+		return nil, os.NewSyscallError("fcntl", err)
+	}
+}
+
 // TODO(mdlayher): consider exporting newConn as New?
 
 // newConn wraps an existing file descriptor to create a Conn. name should be a
