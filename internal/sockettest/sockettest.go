@@ -98,7 +98,8 @@ func Dial(addr net.Addr, cfg *socket.Config) (net.Conn, error) {
 	// Be sure to close the Conn if any of the system calls fail before we
 	// return the Conn to the caller.
 
-	if err := c.Connect(&sa); err != nil {
+	rsa, err := c.Connect(&sa)
+	if err != nil {
 		_ = c.Close()
 		// Don't wrap, we want the raw error for tests.
 		return nil, err
@@ -112,7 +113,7 @@ func Dial(addr net.Addr, cfg *socket.Config) (net.Conn, error) {
 
 	return &conn{
 		local:  newTCPAddr(lsa),
-		remote: ta,
+		remote: newTCPAddr(rsa),
 		c:      c,
 	}, nil
 }

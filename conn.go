@@ -306,8 +306,10 @@ func (c *Conn) Bind(sa unix.Sockaddr) error {
 	return os.NewSyscallError(op, err)
 }
 
-// Connect wraps connect(2).
-func (c *Conn) Connect(sa unix.Sockaddr) error {
+// Connect wraps connect(2). In order to verify that the underlying socket is
+// connected to a remote peer, Connect calls getpeername(2) and returns the
+// unix.Sockaddr from that call.
+func (c *Conn) Connect(sa unix.Sockaddr) (unix.Sockaddr, error) {
 	const op = "connect"
 
 	// TODO(mdlayher): it would seem that trying to connect to unbound vsock
@@ -322,47 +324,49 @@ func (c *Conn) Connect(sa unix.Sockaddr) error {
 		// write.
 		progress uint32
 
-		// Capture closure error.
+		// Capture closure sockaddr and error.
+		rsa unix.Sockaddr
 		err error
 	)
 
 	doErr := c.write(op, func(fd int) error {
-		switch atomic.AddUint32(&progress, 1) {
-		case 1:
+		if atomic.AddUint32(&progress, 1) == 1 {
 			// First call: initiate connect.
 			return unix.Connect(fd, sa)
-		default:
-			// Subsequent calls: the runtime network poller indicates fd is
-			// writable. Check for errno.
-			errno, gerr := c.GetsockoptInt(unix.SOL_SOCKET, unix.SO_ERROR)
-			if gerr != nil {
-				return gerr
-			}
-			if errno != 0 {
-				// Connection is still not ready or failed. If errno indicates
-				// the socket is not ready, we will wait for the next write
-				// event. Otherwise we propagate this errno back to the as a
-				// permanent error.
-				uerr := unix.Errno(errno)
-				err = uerr
-				return uerr
-			}
-
-			// According to internal/poll, it's possible for the runtime network
-			// poller to spuriously wake us and return errno 0 for SO_ERROR.
-			// Make sure we are actually connected to a peer.
-			if _, err := c.Getpeername(); err != nil {
-				// internal/poll unconditionally goes back to WaitWrite.
-				// Synthesize an error that will do the same for us.
-				return unix.EAGAIN
-			}
-
-			// Connection complete.
-			return nil
 		}
+
+		// Subsequent calls: the runtime network poller indicates fd is
+		// writable. Check for errno.
+		errno, gerr := c.GetsockoptInt(unix.SOL_SOCKET, unix.SO_ERROR)
+		if gerr != nil {
+			return gerr
+		}
+		if errno != 0 {
+			// Connection is still not ready or failed. If errno indicates
+			// the socket is not ready, we will wait for the next write
+			// event. Otherwise we propagate this errno back to the as a
+			// permanent error.
+			uerr := unix.Errno(errno)
+			err = uerr
+			return uerr
+		}
+
+		// According to internal/poll, it's possible for the runtime network
+		// poller to spuriously wake us and return errno 0 for SO_ERROR.
+		// Make sure we are actually connected to a peer.
+		peer, err := c.Getpeername()
+		if err != nil {
+			// internal/poll unconditionally goes back to WaitWrite.
+			// Synthesize an error that will do the same for us.
+			return unix.EAGAIN
+		}
+
+		// Connection complete.
+		rsa = peer
+		return nil
 	})
 	if doErr != nil {
-		return doErr
+		return nil, doErr
 	}
 
 	if err == unix.EISCONN {
@@ -373,10 +377,10 @@ func (c *Conn) Connect(sa unix.Sockaddr) error {
 		// not be treated as an error.
 		//  - Darwin reports this for at least TCP sockets
 		//  - Linux reports this for at least AF_VSOCK sockets
-		return nil
+		return rsa, nil
 	}
 
-	return os.NewSyscallError(op, err)
+	return rsa, os.NewSyscallError(op, err)
 }
 
 // Getsockname wraps getsockname(2).

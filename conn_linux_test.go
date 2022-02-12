@@ -139,7 +139,7 @@ func TestLinuxDialVsockNoListener(t *testing.T) {
 
 	// Given a (hopefully) non-existent listener on localhost, expect
 	// ECONNRESET.
-	err = c.Connect(&unix.SockaddrVM{
+	_, err = c.Connect(&unix.SockaddrVM{
 		CID:  unix.VMADDR_CID_LOCAL,
 		Port: math.MaxUint32,
 	})
