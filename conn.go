@@ -335,7 +335,7 @@ func (c *Conn) Connect(sa unix.Sockaddr) error {
 			// Subsequent calls: the runtime network poller indicates fd is
 			// writable. Check for errno.
 			errno, gerr := c.GetsockoptInt(unix.SOL_SOCKET, unix.SO_ERROR)
-			if err != nil {
+			if gerr != nil {
 				return gerr
 			}
 			if errno != 0 {
