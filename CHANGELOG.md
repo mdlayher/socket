@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v0.2.1
+
+- [New API] [commit](https://github.com/mdlayher/socket/commit/b18ddbe9caa0e34552b4409a3aa311cb460d2f99):
+  `socket.Conn` has a new `SetsockoptPacketMreq` method for wrapping
+  `setsockopt(2)` for `AF_PACKET` socket options.
+
 ## v0.2.0
 
 - [New API] [commit](https://github.com/mdlayher/socket/commit/6e912a68523c45e5fd899239f4b46c402dd856da):
