@@ -38,34 +38,16 @@ func (c *Conn) IoctlKCMClone() (*Conn, error) {
 
 // IoctlKCMAttach wraps ioctl(2) for unix.KCMAttach values.
 func (c *Conn) IoctlKCMAttach(info unix.KCMAttach) error {
-	const op = "ioctl"
-
-	var err error
-	doErr := c.control(op, func(fd int) error {
-		err = unix.IoctlKCMAttach(fd, info)
-		return err
+	return c.controlErr("ioctl", func(fd int) error {
+		return unix.IoctlKCMAttach(fd, info)
 	})
-	if doErr != nil {
-		return doErr
-	}
-
-	return os.NewSyscallError(op, err)
 }
 
 // IoctlKCMUnattach wraps ioctl(2) for unix.KCMUnattach values.
 func (c *Conn) IoctlKCMUnattach(info unix.KCMUnattach) error {
-	const op = "ioctl"
-
-	var err error
-	doErr := c.control(op, func(fd int) error {
-		err = unix.IoctlKCMUnattach(fd, info)
-		return err
+	return c.controlErr("ioctl", func(fd int) error {
+		return unix.IoctlKCMUnattach(fd, info)
 	})
-	if doErr != nil {
-		return doErr
-	}
-
-	return os.NewSyscallError(op, err)
 }
 
 // SetBPF attaches an assembled BPF program to a Conn.
@@ -92,34 +74,16 @@ func (c *Conn) RemoveBPF() error {
 
 // SetsockoptPacketMreq wraps setsockopt(2) for unix.PacketMreq values.
 func (c *Conn) SetsockoptPacketMreq(level, opt int, mreq *unix.PacketMreq) error {
-	const op = "setsockopt"
-
-	var err error
-	doErr := c.control(op, func(fd int) error {
-		err = unix.SetsockoptPacketMreq(fd, level, opt, mreq)
-		return err
+	return c.controlErr("setsockopt", func(fd int) error {
+		return unix.SetsockoptPacketMreq(fd, level, opt, mreq)
 	})
-	if doErr != nil {
-		return doErr
-	}
-
-	return os.NewSyscallError(op, err)
 }
 
 // SetsockoptSockFprog wraps setsockopt(2) for unix.SockFprog values.
 func (c *Conn) SetsockoptSockFprog(level, opt int, fprog *unix.SockFprog) error {
-	const op = "setsockopt"
-
-	var err error
-	doErr := c.control(op, func(fd int) error {
-		err = unix.SetsockoptSockFprog(fd, level, opt, fprog)
-		return err
+	return c.controlErr("setsockopt", func(fd int) error {
+		return unix.SetsockoptSockFprog(fd, level, opt, fprog)
 	})
-	if doErr != nil {
-		return doErr
-	}
-
-	return os.NewSyscallError(op, err)
 }
 
 // GetSockoptTpacketStats wraps getsockopt(2) for getting TpacketStats
@@ -136,8 +100,9 @@ func (c *Conn) GetSockoptTpacketStats(level, name int) (*unix.TpacketStats, erro
 		return err
 	})
 	if doErr != nil {
-		return stats, doErr
+		return nil, doErr
 	}
+
 	return stats, os.NewSyscallError(op, err)
 }
 
@@ -155,7 +120,8 @@ func (c *Conn) GetSockoptTpacketStatsV3(level, name int) (*unix.TpacketStatsV3, 
 		return err
 	})
 	if doErr != nil {
-		return stats, doErr
+		return nil, doErr
 	}
+
 	return stats, os.NewSyscallError(op, err)
 }
