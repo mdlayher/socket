@@ -11,6 +11,63 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// IoctlKCMClone wraps ioctl(2) for unix.KCMClone values, but returns a Conn
+// rather than a raw file descriptor.
+func (c *Conn) IoctlKCMClone() (*Conn, error) {
+	const op = "ioctl"
+
+	var (
+		info *unix.KCMClone
+		err  error
+	)
+
+	doErr := c.control(op, func(fd int) error {
+		info, err = unix.IoctlKCMClone(fd)
+		return err
+	})
+	if doErr != nil {
+		return nil, doErr
+	}
+	if err != nil {
+		return nil, os.NewSyscallError(op, err)
+	}
+
+	// Successful clone, wrap in a Conn for use by the caller.
+	return newConn(int(info.Fd), c.name)
+}
+
+// IoctlKCMAttach wraps ioctl(2) for unix.KCMAttach values.
+func (c *Conn) IoctlKCMAttach(info unix.KCMAttach) error {
+	const op = "ioctl"
+
+	var err error
+	doErr := c.control(op, func(fd int) error {
+		err = unix.IoctlKCMAttach(fd, info)
+		return err
+	})
+	if doErr != nil {
+		return doErr
+	}
+
+	return os.NewSyscallError(op, err)
+}
+
+// IoctlKCMUnattach wraps ioctl(2) for unix.KCMUnattach values.
+func (c *Conn) IoctlKCMUnattach(info unix.KCMUnattach) error {
+	const op = "ioctl"
+
+	var err error
+	doErr := c.control(op, func(fd int) error {
+		err = unix.IoctlKCMUnattach(fd, info)
+		return err
+	})
+	if doErr != nil {
+		return doErr
+	}
+
+	return os.NewSyscallError(op, err)
+}
+
 // SetBPF attaches an assembled BPF program to a Conn.
 func (c *Conn) SetBPF(filter []bpf.RawInstruction) error {
 	// We can't point to the first instruction in the array if no instructions
