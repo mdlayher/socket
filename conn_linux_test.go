@@ -143,6 +143,10 @@ func TestLinuxDialVsockNoListener(t *testing.T) {
 		CID:  unix.VMADDR_CID_LOCAL,
 		Port: math.MaxUint32,
 	})
+	if err == nil {
+		// See https://github.com/mdlayher/socket/issues/4.
+		t.Skipf("skipping, expected error but vsock successfully connected to local service")
+	}
 
 	want := os.NewSyscallError("connect", unix.ECONNRESET)
 	if diff := cmp.Diff(want, err); diff != "" {
