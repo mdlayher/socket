@@ -184,7 +184,7 @@ func socket(domain, typ, proto int, name string) (*Conn, error) {
 			}
 
 			// No error, prepare the Conn.
-			return newConn(fd, name)
+			return New(fd, name)
 		case !ready(err):
 			// System call interrupted or not ready, try again.
 			continue
@@ -211,7 +211,7 @@ func socket(domain, typ, proto int, name string) (*Conn, error) {
 			unix.CloseOnExec(fd)
 			syscall.ForkLock.RUnlock()
 
-			return newConn(fd, name)
+			return New(fd, name)
 		default:
 			// Unhandled error.
 			return nil, os.NewSyscallError("socket", err)
@@ -230,7 +230,7 @@ func FileConn(f *os.File, name string) (*Conn, error) {
 	switch err {
 	case nil:
 		// OK, ready to set up non-blocking I/O.
-		return newConn(fd, name)
+		return New(fd, name)
 	case unix.EINVAL:
 		// The kernel rejected our fcntl(2), fall back to separate dup(2) and
 		// setting close on exec.
@@ -248,18 +248,25 @@ func FileConn(f *os.File, name string) (*Conn, error) {
 		unix.CloseOnExec(fd)
 		syscall.ForkLock.RUnlock()
 
-		return newConn(fd, name)
+		return New(fd, name)
 	default:
 		// Any other errors.
 		return nil, os.NewSyscallError("fcntl", err)
 	}
 }
 
-// TODO(mdlayher): consider exporting newConn as New?
-
-// newConn wraps an existing file descriptor to create a Conn. name should be a
+// New wraps an existing file descriptor to create a Conn. name should be a
 // unique name for the socket type such as "netlink" or "vsock".
-func newConn(fd int, name string) (*Conn, error) {
+//
+// Most callers should use Socket or FileConn to construct a Conn. New is
+// intended for integrating with specific system calls which provide a file
+// descriptor that supports asynchronous I/O. The file descriptor is immediately
+// set to nonblocking mode and registered with Go's runtime network poller for
+// future I/O operations.
+//
+// Unlike FileConn, New does not duplicate the existing file descriptor in any
+// way. The returned Conn takes ownership of the underlying file descriptor.
+func New(fd int, name string) (*Conn, error) {
 	// All Conn I/O is nonblocking for integration with Go's runtime network
 	// poller. Depending on the OS this might already be set but it can't hurt
 	// to set it again.
@@ -318,7 +325,7 @@ func (c *Conn) Accept(flags int) (*Conn, unix.Sockaddr, error) {
 
 	// Successfully accepted a connection, wrap it in a Conn for use by the
 	// caller.
-	ac, err := newConn(nfd, c.name)
+	ac, err := New(nfd, c.name)
 	if err != nil {
 		return nil, nil, err
 	}

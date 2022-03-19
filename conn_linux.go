@@ -33,7 +33,7 @@ func (c *Conn) IoctlKCMClone() (*Conn, error) {
 	}
 
 	// Successful clone, wrap in a Conn for use by the caller.
-	return newConn(int(info.Fd), c.name)
+	return New(int(info.Fd), c.name)
 }
 
 // IoctlKCMAttach wraps ioctl(2) for unix.KCMAttach values.
@@ -47,6 +47,39 @@ func (c *Conn) IoctlKCMAttach(info unix.KCMAttach) error {
 func (c *Conn) IoctlKCMUnattach(info unix.KCMUnattach) error {
 	return c.controlErr("ioctl", func(fd int) error {
 		return unix.IoctlKCMUnattach(fd, info)
+	})
+}
+
+// PidfdGetfd wraps pidfd_getfd(2) for a Conn which wraps a pidfd, but returns a
+// Conn rather than a raw file descriptor.
+func (c *Conn) PidfdGetfd(targetFD, flags int) (*Conn, error) {
+	const op = "pidfd_getfd"
+
+	var (
+		outFD int
+		err   error
+	)
+
+	doErr := c.control(op, func(fd int) error {
+		outFD, err = unix.PidfdGetfd(fd, targetFD, flags)
+		return err
+	})
+	if doErr != nil {
+		return nil, doErr
+	}
+	if err != nil {
+		return nil, os.NewSyscallError(op, err)
+	}
+
+	// Successful getfd, wrap in a Conn for use by the caller.
+	return New(outFD, c.name)
+}
+
+// PidfdSendSignal wraps pidfd_send_signal(2) for a Conn which wraps a Linux
+// pidfd.
+func (c *Conn) PidfdSendSignal(sig unix.Signal, info *unix.Siginfo, flags int) error {
+	return c.controlErr("pidfd_send_signal", func(fd int) error {
+		return unix.PidfdSendSignal(fd, sig, info, flags)
 	})
 }
 
