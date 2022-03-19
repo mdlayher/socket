@@ -1,10 +1,16 @@
 # CHANGELOG
 
+## v0.2.3
+
+- [New API] [commit](https://github.com/mdlayher/socket/commit/a425d96e0f772c053164f8ce4c9c825380a98086):
+  `socket.Conn` has new `Pidfd*` methods for wrapping the `pidfd_*(2)` family of
+  system calls.
+
 ## v0.2.2
 
 - [New API] [commit](https://github.com/mdlayher/socket/commit/a2429f1dfe8ec2586df5a09f50ead865276cd027):
-  `socket.Conn` has a new `IoctlKCM*` methods for wrapping `ioctl(2)` for
-  `AF_KCM` operations.
+  `socket.Conn` has new `IoctlKCM*` methods for wrapping `ioctl(2)` for `AF_KCM`
+  operations.
 
 ## v0.2.1
 
