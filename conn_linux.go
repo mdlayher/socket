@@ -119,7 +119,10 @@ func (c *Conn) SetsockoptSockFprog(level, opt int, fprog *unix.SockFprog) error 
 	})
 }
 
-// GetSockoptTpacketStats wraps getsockopt(2) for getting TpacketStats
+// TODO(mdlayher): we accidentally called these GetSockopt rather than
+// Getsockopt by package unix convention. Consider fixing.
+
+// GetSockoptTpacketStats wraps getsockopt(2) for unix.TpacketStats values.
 func (c *Conn) GetSockoptTpacketStats(level, name int) (*unix.TpacketStats, error) {
 	const op = "getsockopt"
 
@@ -139,7 +142,7 @@ func (c *Conn) GetSockoptTpacketStats(level, name int) (*unix.TpacketStats, erro
 	return stats, os.NewSyscallError(op, err)
 }
 
-// GetSockoptTpacketStatsV3 wraps getsockopt(2) for getting TpacketStatsV3
+// GetSockoptTpacketStatsV3 wraps getsockopt(2) for unix.TpacketStatsV3 values.
 func (c *Conn) GetSockoptTpacketStatsV3(level, name int) (*unix.TpacketStatsV3, error) {
 	const op = "getsockopt"
 
@@ -157,4 +160,11 @@ func (c *Conn) GetSockoptTpacketStatsV3(level, name int) (*unix.TpacketStatsV3, 
 	}
 
 	return stats, os.NewSyscallError(op, err)
+}
+
+// Waitid wraps waitid(2).
+func (c *Conn) Waitid(idType int, info *unix.Siginfo, options int, rusage *unix.Rusage) error {
+	return c.readErr("waitid", func(fd int) error {
+		return unix.Waitid(idType, fd, info, options, rusage)
+	})
 }

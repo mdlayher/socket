@@ -578,6 +578,22 @@ func (c *Conn) read(op string, f func(fd int) error) error {
 	})
 }
 
+// readErr wraps read to execute a function and capture its error result.
+// This is a convenience wrapper for functions which don't return any extra
+// values to capture in a closure.
+func (c *Conn) readErr(op string, f func(fd int) error) error {
+	var err error
+	doErr := c.read(op, func(fd int) error {
+		err = f(fd)
+		return err
+	})
+	if doErr != nil {
+		return doErr
+	}
+
+	return os.NewSyscallError(op, err)
+}
+
 // write executes f, a write function, against the associated file descriptor.
 // op is used to create an *os.SyscallError if the file descriptor is closed.
 func (c *Conn) write(op string, f func(fd int) error) error {
