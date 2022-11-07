@@ -80,7 +80,7 @@ func (l *listener) Addr() net.Addr { return l.addr }
 func (l *listener) Close() error   { return l.c.Close() }
 func (l *listener) Accept() (net.Conn, error) {
 	// SOCK_CLOEXEC and SOCK_NONBLOCK set automatically by Accept when possible.
-	c, rsa, err := l.c.Accept(l.ctx, 0)
+	c, rsa, err := l.c.Accept(0)
 	if err != nil {
 		return nil, err
 	}
