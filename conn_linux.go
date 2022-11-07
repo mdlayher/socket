@@ -132,7 +132,7 @@ func (c *Conn) GetSockoptTpacketStats(level, name int) (*unix.TpacketStats, erro
 		err   error
 	)
 
-	doErr := c.control(op, func(fd int) error {
+	doErr := c.control(context.Background(), op, func(fd int) error {
 		stats, err = unix.GetsockoptTpacketStats(fd, level, name)
 		return err
 	})
