@@ -22,8 +22,12 @@ type Conn struct {
 	// descriptors such as those created by accept(2).
 	name string
 
-	// The socket type of the Conn.
-	isStream      bool
+	// Whether this is a streaming descriptor, as opposed to a
+	// packet-based descriptor like a UDP socket.
+	isStream bool
+
+	// Whether a zero byte read indicates EOF. This is false for a
+	// message based socket connection.
 	zeroReadIsEOF bool
 
 	// Provides access to the underlying file registered with the runtime
@@ -384,7 +388,7 @@ func (c *Conn) Accept(flags int) (*Conn, unix.Sockaddr, error) {
 		err error
 	)
 
-	doErr := c.read(nil, sysAccept, func(fd int) error {
+	doErr := c.read(noContext, sysAccept, func(fd int) error {
 		// Either accept(2) or accept4(2) depending on the OS.
 		nfd, sa, err = accept(fd, flags|socketFlags)
 		return err
@@ -421,10 +425,7 @@ func (c *Conn) Connect(sa unix.Sockaddr) (unix.Sockaddr, error) {
 	return c.ConnectContext(noContext, sa)
 }
 
-// ConnectContext wraps connect(2). In order to verify that the underlying
-// socket is connected to a remote peer, Connect calls getpeername(2) and
-// returns the unix.Sockaddr from that call. It will cancel the operation
-// when context ctx is done.
+// ConnectContext is like Connect but takes a context.
 func (c *Conn) ConnectContext(ctx context.Context, sa unix.Sockaddr) (unix.Sockaddr, error) {
 	const op = "connect"
 
@@ -581,7 +582,7 @@ func (c *Conn) Recvmsg(p, oob []byte, flags int) (int, int, int, unix.Sockaddr, 
 	return c.RecvmsgContext(noContext, p, oob, flags)
 }
 
-// RecvmsgContext wraps recvmsg(2) but takes a context.
+// RecvmsgContext is like Recvmsg but takes a context.
 func (c *Conn) RecvmsgContext(ctx context.Context, p, oob []byte, flags int) (int, int, int, unix.Sockaddr, error) {
 	const op = "recvmsg"
 
@@ -611,7 +612,7 @@ func (c *Conn) Recvfrom(p []byte, flags int) (int, unix.Sockaddr, error) {
 	return c.RecvfromContext(noContext, p, flags)
 }
 
-// RecvfromContext wraps recvfrom(2) but takes a context.
+// RecvfromContext is like Recvfrom but takes a context.
 func (c *Conn) RecvfromContext(ctx context.Context, p []byte, flags int) (int, unix.Sockaddr, error) {
 	const op = "recvfrom"
 
@@ -642,7 +643,7 @@ func (c *Conn) Sendmsg(p, oob []byte, to unix.Sockaddr, flags int) error {
 	return err
 }
 
-// SendmsgContext wraps sendmsg(2) but takes a context.
+// SendmsgContext is like Sendmsg but takes a context.
 // The function returns the number of bytes written to the socket.
 func (c *Conn) SendmsgContext(ctx context.Context, p, oob []byte, to unix.Sockaddr, flags int) (int, error) {
 	var (
@@ -668,7 +669,7 @@ func (c *Conn) Sendto(p []byte, to unix.Sockaddr, flags int) error {
 	return c.SendtoContext(noContext, p, flags, to)
 }
 
-// SendtoContext wraps sendto(2) but takes a context.
+// SendtoContext like Sendto but takes a context.
 func (c *Conn) SendtoContext(ctx context.Context, p []byte, flags int, to unix.Sockaddr) error {
 	return c.writeErr(ctx, "sendto", func(fd int) error {
 		return unix.Sendto(fd, p, flags, to)
@@ -701,6 +702,7 @@ func (c *Conn) Shutdown(how int) error {
 
 // read executes f, a read function, against the associated file descriptor.
 // op is used to create an *os.SyscallError if the file descriptor is closed.
+// It takes context ctx for early cancelation, ctx may be nil.
 func (c *Conn) read(ctx context.Context, op string, f func(fd int) error) error {
 	if atomic.LoadUint32(&c.closed) != 0 {
 		return os.NewSyscallError(op, unix.EBADF)
@@ -729,6 +731,7 @@ func (c *Conn) read(ctx context.Context, op string, f func(fd int) error) error 
 // readErr wraps read to execute a function and capture its error result.
 // This is a convenience wrapper for functions which don't return any extra
 // values to capture in a closure.
+// It takes context ctx for early cancelation, ctx may be nil.
 func (c *Conn) readErr(ctx context.Context, op string, f func(fd int) error) error {
 	var err error
 	doErr := c.read(ctx, op, func(fd int) error {
@@ -743,6 +746,7 @@ func (c *Conn) readErr(ctx context.Context, op string, f func(fd int) error) err
 
 // write executes f, a write function, against the associated file descriptor.
 // op is used to create an *os.SyscallError if the file descriptor is closed.
+// It takes context ctx for early cancelation, ctx may be nil.
 func (c *Conn) write(ctx context.Context, op string, f func(fd int) error) error {
 	if atomic.LoadUint32(&c.closed) != 0 {
 		return os.NewSyscallError(op, unix.EBADF)
@@ -770,7 +774,8 @@ func (c *Conn) write(ctx context.Context, op string, f func(fd int) error) error
 
 // writeErr wraps write to execute a function and capture its error result.
 // This is a convenience wrapper for functions which don't return any extra
-// values to capture in a closure.
+// values to capture in a closure. It takes context ctx for early cancelation,
+// ctx may be nil.
 func (c *Conn) writeErr(ctx context.Context, op string, f func(fd int) error) error {
 	var err error
 	doErr := c.write(ctx, op, func(fd int) error {
@@ -785,7 +790,7 @@ func (c *Conn) writeErr(ctx context.Context, op string, f func(fd int) error) er
 
 // control executes f, a control function, against the associated file
 // descriptor. op is used to create an *os.SyscallError if the file descriptor
-// is closed.
+// is closed. It takes context ctx for early cancelation, ctx may be nil.
 func (c *Conn) control(ctx context.Context, op string, f func(fd int) error) error {
 	if atomic.LoadUint32(&c.closed) != 0 {
 		return os.NewSyscallError(op, unix.EBADF)
@@ -816,7 +821,8 @@ func (c *Conn) control(ctx context.Context, op string, f func(fd int) error) err
 
 // controlErr wraps control to execute a function and capture its error result.
 // This is a convenience wrapper for functions which don't return any extra
-// values to capture in a closure.
+// values to capture in a closure. It takes context ctx for early cancelation,
+// ctx may be nil.
 func (c *Conn) controlErr(ctx context.Context, op string, f func(fd int) error) error {
 	var err error
 	doErr := c.control(ctx, op, func(fd int) error {
