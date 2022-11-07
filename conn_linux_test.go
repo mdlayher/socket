@@ -4,6 +4,7 @@
 package socket_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -70,7 +71,7 @@ func TestLinuxConnBuffers(t *testing.T) {
 }
 
 func TestLinuxNetworkNamespaces(t *testing.T) {
-	l, err := sockettest.Listen(0, nil)
+	l, err := sockettest.Listen(context.Background(), 0, nil)
 	if err != nil {
 		t.Fatalf("failed to create listener: %v", err)
 	}

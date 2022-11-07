@@ -4,6 +4,7 @@
 package socket
 
 import (
+	"context"
 	"os"
 	"unsafe"
 
