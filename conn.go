@@ -758,11 +758,9 @@ func (c *Conn) control(ctx context.Context, op string, f func(fd int) error) err
 		// Repeatedly attempt the syscall(s) invoked by f until completion is
 		// indicated by the return value of ready.
 		for {
-			if ctx != nil {
-				if err := ctx.Err(); err != nil {
-					cerr = err
-					return
-				}
+			if err := ctx.Err(); err != nil {
+				cerr = err
+				return
 			}
 			if ready(f(int(fd))) {
 				return
@@ -783,7 +781,8 @@ func (c *Conn) control(ctx context.Context, op string, f func(fd int) error) err
 func (c *Conn) controlErr(ctx context.Context, op string, f func(fd int) error) error {
 	var err error
 	doErr := c.control(ctx, op, func(fd int) error {
-		return f(fd)
+		err = f(fd)
+		return err
 	})
 	if doErr != nil {
 		return doErr
