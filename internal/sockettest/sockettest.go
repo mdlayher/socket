@@ -3,6 +3,7 @@
 package sockettest
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -16,11 +17,13 @@ import (
 type listener struct {
 	addr *net.TCPAddr
 	c    *socket.Conn
+	ctx  context.Context
 }
 
 // Listen creates an IPv6 TCP net.Listener backed by a *socket.Conn on the
-// specified port with optional configuration.
-func Listen(port int, cfg *socket.Config) (net.Listener, error) {
+// specified port with optional configuration. Context ctx will be passed
+// to accepted connections.
+func Listen(ctx context.Context, port int, cfg *socket.Config) (net.Listener, error) {
 	c, err := socket.Socket(unix.AF_INET6, unix.SOCK_STREAM, 0, "tcpv6-server", cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open socket: %v", err)
@@ -48,6 +51,7 @@ func Listen(port int, cfg *socket.Config) (net.Listener, error) {
 	return &listener{
 		addr: newTCPAddr(sa),
 		c:    c,
+		ctx:  ctx,
 	}, nil
 }
 
@@ -91,17 +95,19 @@ func (l *listener) Accept() (net.Conn, error) {
 		local:  newTCPAddr(lsa),
 		remote: newTCPAddr(rsa),
 		c:      c,
+		ctx:    l.ctx,
 	}, nil
 }
 
 type conn struct {
 	local, remote *net.TCPAddr
 	c             *socket.Conn
+	ctx           context.Context
 }
 
 // Dial creates an IPv6 TCP net.Conn backed by a *socket.Conn with optional
 // configuration.
-func Dial(addr net.Addr, cfg *socket.Config) (net.Conn, error) {
+func Dial(ctx context.Context, addr net.Addr, cfg *socket.Config) (net.Conn, error) {
 	ta, ok := addr.(*net.TCPAddr)
 	if !ok {
 		return nil, fmt.Errorf("expected *net.TCPAddr, but got: %T", addr)
@@ -119,7 +125,12 @@ func Dial(addr net.Addr, cfg *socket.Config) (net.Conn, error) {
 	// Be sure to close the Conn if any of the system calls fail before we
 	// return the Conn to the caller.
 
-	rsa, err := c.Connect(&sa)
+	var rsa unix.Sockaddr
+	if ctx == nil {
+		rsa, err = c.Connect(&sa)
+	} else {
+		rsa, err = c.ConnectContext(ctx, &sa)
+	}
 	if err != nil {
 		_ = c.Close()
 		// Don't wrap, we want the raw error for tests.
@@ -136,6 +147,7 @@ func Dial(addr net.Addr, cfg *socket.Config) (net.Conn, error) {
 		local:  newTCPAddr(lsa),
 		remote: newTCPAddr(rsa),
 		c:      c,
+		ctx:    ctx,
 	}, nil
 }
 
@@ -148,13 +160,21 @@ func (c *conn) SetDeadline(t time.Time) error      { return c.c.SetDeadline(t) }
 func (c *conn) SetReadDeadline(t time.Time) error  { return c.c.SetReadDeadline(t) }
 func (c *conn) SetWriteDeadline(t time.Time) error { return c.c.SetWriteDeadline(t) }
 
-func (c *conn) Read(b []byte) (int, error) {
-	n, err := c.c.Read(b)
+func (c *conn) Read(b []byte) (n int, err error) {
+	if c.ctx == nil {
+		n, err = c.c.Read(b)
+	} else {
+		n, err = c.c.ReadContext(c.ctx, b)
+	}
 	return n, opError("read", err)
 }
 
-func (c *conn) Write(b []byte) (int, error) {
-	n, err := c.c.Write(b)
+func (c *conn) Write(b []byte) (n int, err error) {
+	if c.ctx == nil {
+		n, err = c.c.Write(b)
+	} else {
+		n, err = c.c.WriteContext(c.ctx, b)
+	}
 	return n, opError("write", err)
 }
 
