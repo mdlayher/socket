@@ -87,16 +87,13 @@ func (c *Conn) CloseRead() error { return c.Shutdown(unix.SHUT_RD) }
 // use Close.
 func (c *Conn) CloseWrite() error { return c.Shutdown(unix.SHUT_WR) }
 
-// Read implements io.Reader by reading directly from the underlying file
-// descriptor.
-func (c *Conn) Read(b []byte) (int, error) { return c.fd.Read(b) }
+// Read reads directly from the underlying file descriptor.
+// If context ctx is nil, the runtime poller will be used.
+func (c *Conn) Read(ctx context.Context, b []byte) (int, error) {
+	if ctx == nil {
+		return c.fd.Read(b)
+	}
 
-// Write implements io.Writer by writing directly to the underlying file
-// descriptor.
-func (c *Conn) Write(b []byte) (int, error) { return c.fd.Write(b) }
-
-// ReadContext is like Read but takes a context.
-func (c *Conn) ReadContext(ctx context.Context, b []byte) (int, error) {
 	var (
 		n   int
 		err error
@@ -120,8 +117,13 @@ func (c *Conn) ReadContext(ctx context.Context, b []byte) (int, error) {
 	return n, os.NewSyscallError("read", err)
 }
 
-// WriteContext is like Write but takes a context.
-func (c *Conn) WriteContext(ctx context.Context, b []byte) (int, error) {
+// Write writes directly to the underlying file descriptor.
+// If context ctx is nil, the runtime poller will be used.
+func (c *Conn) Write(ctx context.Context, b []byte) (int, error) {
+	if ctx == nil {
+		return c.fd.Write(b)
+	}
+
 	var (
 		n, nn int
 		err   error
@@ -381,14 +383,14 @@ func New(fd int, name string) (*Conn, error) {
 //
 // If the operating system only supports accept(2) (which does not allow flags)
 // and flags is not zero, an error will be returned.
-func (c *Conn) Accept(flags int) (*Conn, unix.Sockaddr, error) {
+func (c *Conn) Accept(ctx context.Context, flags int) (*Conn, unix.Sockaddr, error) {
 	var (
 		nfd int
 		sa  unix.Sockaddr
 		err error
 	)
 
-	doErr := c.read(noContext, sysAccept, func(fd int) error {
+	doErr := c.read(ctx, sysAccept, func(fd int) error {
 		// Either accept(2) or accept4(2) depending on the OS.
 		nfd, sa, err = accept(fd, flags|socketFlags)
 		return err
@@ -413,7 +415,7 @@ func (c *Conn) Accept(flags int) (*Conn, unix.Sockaddr, error) {
 
 // Bind wraps bind(2).
 func (c *Conn) Bind(sa unix.Sockaddr) error {
-	return c.controlErr(noContext, "bind", func(fd int) error {
+	return c.controlErr(context.Background(), "bind", func(fd int) error {
 		return unix.Bind(fd, sa)
 	})
 }
@@ -421,12 +423,7 @@ func (c *Conn) Bind(sa unix.Sockaddr) error {
 // Connect wraps connect(2). In order to verify that the underlying socket is
 // connected to a remote peer, Connect calls getpeername(2) and returns the
 // unix.Sockaddr from that call.
-func (c *Conn) Connect(sa unix.Sockaddr) (unix.Sockaddr, error) {
-	return c.ConnectContext(noContext, sa)
-}
-
-// ConnectContext is like Connect but takes a context.
-func (c *Conn) ConnectContext(ctx context.Context, sa unix.Sockaddr) (unix.Sockaddr, error) {
+func (c *Conn) Connect(ctx context.Context, sa unix.Sockaddr) (unix.Sockaddr, error) {
 	const op = "connect"
 
 	// TODO(mdlayher): it would seem that trying to connect to unbound vsock
@@ -455,10 +452,8 @@ func (c *Conn) ConnectContext(ctx context.Context, sa unix.Sockaddr) (unix.Socka
 		// Subsequent calls: the runtime network poller indicates fd is
 		// writable. Check for errno.
 		errno, gerr := c.GetsockoptInt(unix.SOL_SOCKET, unix.SO_ERROR)
-		if ctx != noContext {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		if gerr != nil {
 			return gerr
@@ -477,10 +472,8 @@ func (c *Conn) ConnectContext(ctx context.Context, sa unix.Sockaddr) (unix.Socka
 		// poller to spuriously wake us and return errno 0 for SO_ERROR.
 		// Make sure we are actually connected to a peer.
 		peer, err := c.Getpeername()
-		if ctx != noContext {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		if err != nil {
 			// internal/poll unconditionally goes back to WaitWrite.
@@ -519,7 +512,7 @@ func (c *Conn) Getsockname() (unix.Sockaddr, error) {
 		err error
 	)
 
-	doErr := c.control(noContext, op, func(fd int) error {
+	doErr := c.control(context.Background(), op, func(fd int) error {
 		sa, err = unix.Getsockname(fd)
 		return err
 	})
@@ -539,7 +532,7 @@ func (c *Conn) Getpeername() (unix.Sockaddr, error) {
 		err error
 	)
 
-	doErr := c.control(noContext, op, func(fd int) error {
+	doErr := c.control(context.Background(), op, func(fd int) error {
 		sa, err = unix.Getpeername(fd)
 		return err
 	})
@@ -559,7 +552,7 @@ func (c *Conn) GetsockoptInt(level, opt int) (int, error) {
 		err   error
 	)
 
-	doErr := c.control(noContext, op, func(fd int) error {
+	doErr := c.control(context.Background(), op, func(fd int) error {
 		value, err = unix.GetsockoptInt(fd, level, opt)
 		return err
 	})
@@ -572,18 +565,13 @@ func (c *Conn) GetsockoptInt(level, opt int) (int, error) {
 
 // Listen wraps listen(2).
 func (c *Conn) Listen(n int) error {
-	return c.controlErr(noContext, "listen", func(fd int) error {
+	return c.controlErr(context.Background(), "listen", func(fd int) error {
 		return unix.Listen(fd, n)
 	})
 }
 
 // Recvmsg wraps recvmsg(2).
-func (c *Conn) Recvmsg(p, oob []byte, flags int) (int, int, int, unix.Sockaddr, error) {
-	return c.RecvmsgContext(noContext, p, oob, flags)
-}
-
-// RecvmsgContext is like Recvmsg but takes a context.
-func (c *Conn) RecvmsgContext(ctx context.Context, p, oob []byte, flags int) (int, int, int, unix.Sockaddr, error) {
+func (c *Conn) Recvmsg(ctx context.Context, p, oob []byte, flags int) (int, int, int, unix.Sockaddr, error) {
 	const op = "recvmsg"
 
 	var (
@@ -608,12 +596,7 @@ func (c *Conn) RecvmsgContext(ctx context.Context, p, oob []byte, flags int) (in
 }
 
 // Recvfrom wraps recvfrom(2).
-func (c *Conn) Recvfrom(p []byte, flags int) (int, unix.Sockaddr, error) {
-	return c.RecvfromContext(noContext, p, flags)
-}
-
-// RecvfromContext is like Recvfrom but takes a context.
-func (c *Conn) RecvfromContext(ctx context.Context, p []byte, flags int) (int, unix.Sockaddr, error) {
+func (c *Conn) Recvfrom(ctx context.Context, p []byte, flags int) (int, unix.Sockaddr, error) {
 	const op = "recvfrom"
 
 	var (
@@ -638,14 +621,7 @@ func (c *Conn) RecvfromContext(ctx context.Context, p []byte, flags int) (int, u
 }
 
 // Sendmsg wraps sendmsg(2).
-func (c *Conn) Sendmsg(p, oob []byte, to unix.Sockaddr, flags int) error {
-	_, err := c.SendmsgContext(noContext, p, oob, to, flags)
-	return err
-}
-
-// SendmsgContext is like Sendmsg but takes a context.
-// The function returns the number of bytes written to the socket.
-func (c *Conn) SendmsgContext(ctx context.Context, p, oob []byte, to unix.Sockaddr, flags int) (int, error) {
+func (c *Conn) Sendmsg(ctx context.Context, p, oob []byte, to unix.Sockaddr, flags int) (int, error) {
 	var (
 		n   int
 		err error
@@ -663,14 +639,7 @@ func (c *Conn) SendmsgContext(ctx context.Context, p, oob []byte, to unix.Sockad
 }
 
 // Sendto wraps sendto(2).
-func (c *Conn) Sendto(p []byte, to unix.Sockaddr, flags int) error {
-	// TODO(mdlayher): we accidentally swapped argument order when creating this
-	// wrapper. Consider fixing.
-	return c.SendtoContext(noContext, p, flags, to)
-}
-
-// SendtoContext like Sendto but takes a context.
-func (c *Conn) SendtoContext(ctx context.Context, p []byte, flags int, to unix.Sockaddr) error {
+func (c *Conn) Sendto(ctx context.Context, p []byte, flags int, to unix.Sockaddr) error {
 	return c.writeErr(ctx, "sendto", func(fd int) error {
 		return unix.Sendto(fd, p, flags, to)
 	})
@@ -678,14 +647,14 @@ func (c *Conn) SendtoContext(ctx context.Context, p []byte, flags int, to unix.S
 
 // SetsockoptInt wraps setsockopt(2) for integer values.
 func (c *Conn) SetsockoptInt(level, opt, value int) error {
-	return c.controlErr(noContext, "setsockopt", func(fd int) error {
+	return c.controlErr(context.Background(), "setsockopt", func(fd int) error {
 		return unix.SetsockoptInt(fd, level, opt, value)
 	})
 }
 
 // Shutdown wraps shutdown(2).
 func (c *Conn) Shutdown(how int) error {
-	return c.controlErr(noContext, "shutdown", func(fd int) error {
+	return c.controlErr(context.Background(), "shutdown", func(fd int) error {
 		return unix.Shutdown(fd, how)
 	})
 }
@@ -706,12 +675,6 @@ func (c *Conn) Shutdown(how int) error {
 func (c *Conn) read(ctx context.Context, op string, f func(fd int) error) error {
 	if atomic.LoadUint32(&c.closed) != 0 {
 		return os.NewSyscallError(op, unix.EBADF)
-	}
-
-	if ctx == noContext {
-		return c.rc.Read(func(fd uintptr) bool {
-			return ready(f(int(fd)))
-		})
 	}
 
 	err := c.rc.Read(func(fd uintptr) bool {
@@ -750,12 +713,6 @@ func (c *Conn) readErr(ctx context.Context, op string, f func(fd int) error) err
 func (c *Conn) write(ctx context.Context, op string, f func(fd int) error) error {
 	if atomic.LoadUint32(&c.closed) != 0 {
 		return os.NewSyscallError(op, unix.EBADF)
-	}
-
-	if ctx == noContext {
-		return c.rc.Write(func(fd uintptr) (done bool) {
-			return ready(f(int(fd)))
-		})
 	}
 
 	err := c.rc.Write(func(fd uintptr) (done bool) {
@@ -855,8 +812,6 @@ func ready(err error) bool {
 		return true
 	}
 }
-
-var noContext = (context.Context)(nil)
 
 // Darwin and FreeBSD can't read or write 2GB+ files at a time,
 // even on 64-bit systems.

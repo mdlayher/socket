@@ -22,18 +22,10 @@ import (
 )
 
 func TestConn(t *testing.T) {
-	nettest.TestConn(t, makePipe(nil))
+	nettest.TestConn(t, makePipe)
 
 	// Our own extensions to TestConn.
-	t.Run("CloseReadWrite", func(t *testing.T) { timeoutWrapper(t, makePipe(nil), testCloseReadWrite) })
-}
-
-func TestConnContext(t *testing.T) {
-	ctx := context.Background()
-	nettest.TestConn(t, makePipe(ctx))
-
-	// Our own extensions to TestConn.
-	t.Run("CloseReadWrite", func(t *testing.T) { timeoutWrapper(t, makePipe(ctx), testCloseReadWrite) })
+	t.Run("CloseReadWrite", func(t *testing.T) { timeoutWrapper(t, makePipe, testCloseReadWrite) })
 }
 
 func TestDialTCPNoListener(t *testing.T) {
@@ -43,7 +35,7 @@ func TestDialTCPNoListener(t *testing.T) {
 	//
 	// Given a (hopefully) non-existent listener on localhost, expect
 	// ECONNREFUSED.
-	_, err := sockettest.Dial(nil, &net.TCPAddr{
+	_, err := sockettest.Dial(context.Background(), &net.TCPAddr{
 		IP:   net.IPv6loopback,
 		Port: math.MaxUint16,
 	}, nil)
@@ -78,7 +70,7 @@ func TestFileConn(t *testing.T) {
 	f := os.NewFile(uintptr(fd), "tcpv6-listener")
 	defer f.Close()
 
-	l, err := sockettest.FileListener(f)
+	l, err := sockettest.FileListener(context.Background(), f)
 	if err != nil {
 		t.Fatalf("failed to open file listener: %v", err)
 	}
@@ -118,43 +110,43 @@ func TestFileConn(t *testing.T) {
 // Copyright 2016 The Go Authors. All rights reserved. Use of this source
 // code is governed by a BSD-style license that can be found in the LICENSE
 // file.
-func makePipe(ctx context.Context) func() (c1, c2 net.Conn, stop func(), err error) {
-	return func() (c1, c2 net.Conn, stop func(), err error) {
-		ln, err := sockettest.Listen(ctx, 0, nil)
-		if err != nil {
-			return nil, nil, nil, err
-		}
+func makePipe() (c1, c2 net.Conn, stop func(), err error) {
+	ctx := context.Background()
 
-		// Start a connection between two endpoints.
-		var err1, err2 error
-		done := make(chan bool)
-		go func() {
-			c2, err2 = ln.Accept()
-			close(done)
-		}()
-		c1, err1 = sockettest.Dial(ctx, ln.Addr(), nil)
-		<-done
+	ln, err := sockettest.Listen(ctx, 0, nil)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 
-		stop = func() {
-			if err1 == nil {
-				c1.Close()
-			}
-			if err2 == nil {
-				c2.Close()
-			}
-			ln.Close()
-		}
+	// Start a connection between two endpoints.
+	var err1, err2 error
+	done := make(chan bool)
+	go func() {
+		c2, err2 = ln.Accept()
+		close(done)
+	}()
+	c1, err1 = sockettest.Dial(ctx, ln.Addr(), nil)
+	<-done
 
-		switch {
-		case err1 != nil:
-			stop()
-			return nil, nil, nil, err1
-		case err2 != nil:
-			stop()
-			return nil, nil, nil, err2
-		default:
-			return c1, c2, stop, nil
+	stop = func() {
+		if err1 == nil {
+			c1.Close()
 		}
+		if err2 == nil {
+			c2.Close()
+		}
+		ln.Close()
+	}
+
+	switch {
+	case err1 != nil:
+		stop()
+		return nil, nil, nil, err1
+	case err2 != nil:
+		stop()
+		return nil, nil, nil, err2
+	default:
+		return c1, c2, stop, nil
 	}
 }
 

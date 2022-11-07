@@ -22,7 +22,7 @@ type listener struct {
 
 // Listen creates an IPv6 TCP net.Listener backed by a *socket.Conn on the
 // specified port with optional configuration. Context ctx will be passed
-// to accepted connections.
+// to accept and accepted connections.
 func Listen(ctx context.Context, port int, cfg *socket.Config) (net.Listener, error) {
 	c, err := socket.Socket(unix.AF_INET6, unix.SOCK_STREAM, 0, "tcpv6-server", cfg)
 	if err != nil {
@@ -57,7 +57,7 @@ func Listen(ctx context.Context, port int, cfg *socket.Config) (net.Listener, er
 
 // FileListener creates an IPv6 TCP net.Listener backed by a *socket.Conn from
 // the input file.
-func FileListener(f *os.File) (net.Listener, error) {
+func FileListener(ctx context.Context, f *os.File) (net.Listener, error) {
 	c, err := socket.FileConn(f, "tcpv6-server")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file conn: %v", err)
@@ -72,6 +72,7 @@ func FileListener(f *os.File) (net.Listener, error) {
 	return &listener{
 		addr: newTCPAddr(sa),
 		c:    c,
+		ctx:  ctx,
 	}, nil
 }
 
@@ -79,7 +80,7 @@ func (l *listener) Addr() net.Addr { return l.addr }
 func (l *listener) Close() error   { return l.c.Close() }
 func (l *listener) Accept() (net.Conn, error) {
 	// SOCK_CLOEXEC and SOCK_NONBLOCK set automatically by Accept when possible.
-	c, rsa, err := l.c.Accept(0)
+	c, rsa, err := l.c.Accept(l.ctx, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -125,12 +126,7 @@ func Dial(ctx context.Context, addr net.Addr, cfg *socket.Config) (net.Conn, err
 	// Be sure to close the Conn if any of the system calls fail before we
 	// return the Conn to the caller.
 
-	var rsa unix.Sockaddr
-	if ctx == nil {
-		rsa, err = c.Connect(&sa)
-	} else {
-		rsa, err = c.ConnectContext(ctx, &sa)
-	}
+	rsa, err := c.Connect(ctx, &sa)
 	if err != nil {
 		_ = c.Close()
 		// Don't wrap, we want the raw error for tests.
@@ -161,20 +157,12 @@ func (c *conn) SetReadDeadline(t time.Time) error  { return c.c.SetReadDeadline(
 func (c *conn) SetWriteDeadline(t time.Time) error { return c.c.SetWriteDeadline(t) }
 
 func (c *conn) Read(b []byte) (n int, err error) {
-	if c.ctx == nil {
-		n, err = c.c.Read(b)
-	} else {
-		n, err = c.c.ReadContext(c.ctx, b)
-	}
+	n, err = c.c.Read(c.ctx, b)
 	return n, opError("read", err)
 }
 
 func (c *conn) Write(b []byte) (n int, err error) {
-	if c.ctx == nil {
-		n, err = c.c.Write(b)
-	} else {
-		n, err = c.c.WriteContext(c.ctx, b)
-	}
+	n, err = c.c.Write(c.ctx, b)
 	return n, opError("write", err)
 }
 

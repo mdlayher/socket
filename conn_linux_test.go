@@ -98,6 +98,7 @@ func TestLinuxNetworkNamespaces(t *testing.T) {
 		// This OS thread has been moved to a different network namespace and
 		// thus we should also be able to start a listener on the same port.
 		l, err := sockettest.Listen(
+			context.Background(),
 			l.Addr().(*net.TCPAddr).Port,
 			&socket.Config{NetNS: ns.FD()},
 		)
@@ -139,7 +140,7 @@ func TestLinuxDialVsockNoListener(t *testing.T) {
 
 	// Given a (hopefully) non-existent listener on localhost, expect
 	// ECONNRESET.
-	_, err = c.Connect(&unix.SockaddrVM{
+	_, err = c.Connect(context.Background(), &unix.SockaddrVM{
 		CID:  unix.VMADDR_CID_LOCAL,
 		Port: math.MaxUint32,
 	})
