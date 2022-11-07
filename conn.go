@@ -383,14 +383,14 @@ func New(fd int, name string) (*Conn, error) {
 //
 // If the operating system only supports accept(2) (which does not allow flags)
 // and flags is not zero, an error will be returned.
-func (c *Conn) Accept(ctx context.Context, flags int) (*Conn, unix.Sockaddr, error) {
+func (c *Conn) Accept(flags int) (*Conn, unix.Sockaddr, error) {
 	var (
 		nfd int
 		sa  unix.Sockaddr
 		err error
 	)
 
-	doErr := c.read(ctx, sysAccept, func(fd int) error {
+	doErr := c.read(context.Background(), sysAccept, func(fd int) error {
 		// Either accept(2) or accept4(2) depending on the OS.
 		nfd, sa, err = accept(fd, flags|socketFlags)
 		return err
