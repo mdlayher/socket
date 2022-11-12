@@ -102,23 +102,14 @@ func (c *Conn) Read(b []byte) (int, error) { return c.fd.Read(b) }
 // ReadContext reads from the underlying file descriptor with added support for
 // context cancelation.
 func (c *Conn) ReadContext(ctx context.Context, b []byte) (int, error) {
-	var (
-		n   int
-		err error
-	)
-
 	if c.isStream && len(b) > maxRW {
 		b = b[:maxRW]
 	}
-	doErr := c.read(ctx, "read", func(fd int) error {
-		n, err = unix.Read(fd, b)
-		return err
-	})
 
-	switch {
-	case doErr != nil:
-		return 0, doErr
-	case n == 0 && err == nil && c.zeroReadIsEOF:
+	n, err := readT(c, ctx, "read", func(fd int) (int, error) {
+		return unix.Read(fd, b)
+	})
+	if n == 0 && err == nil && c.zeroReadIsEOF {
 		return 0, io.EOF
 	}
 
@@ -391,38 +382,33 @@ func New(fd int, name string) (*Conn, error) {
 // If the operating system only supports accept(2) (which does not allow flags)
 // and flags is not zero, an error will be returned.
 func (c *Conn) Accept(flags int) (*Conn, unix.Sockaddr, error) {
-	var (
+	type ret struct {
 		nfd int
 		sa  unix.Sockaddr
-		err error
-	)
+	}
 
-	doErr := c.read(context.Background(), sysAccept, func(fd int) error {
+	r, err := readT(c, context.Background(), sysAccept, func(fd int) (ret, error) {
 		// Either accept(2) or accept4(2) depending on the OS.
-		nfd, sa, err = accept(fd, flags|socketFlags)
-		return err
+		nfd, sa, err := accept(fd, flags|socketFlags)
+		return ret{nfd, sa}, err
 	})
-	if doErr != nil {
-		return nil, nil, doErr
-	}
-	if err != nil {
-		// sysAccept is either "accept" or "accept4" depending on the OS.
-		return nil, nil, os.NewSyscallError(sysAccept, err)
-	}
-
-	// Successfully accepted a connection, wrap it in a Conn for use by the
-	// caller.
-	ac, err := New(nfd, c.name)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	return ac, sa, nil
+	// Successfully accepted a connection, wrap it in a Conn for use by the
+	// caller.
+	ac, err := New(r.nfd, c.name)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return ac, r.sa, nil
 }
 
 // Bind wraps bind(2).
 func (c *Conn) Bind(sa unix.Sockaddr) error {
-	return c.controlErr(context.Background(), "bind", func(fd int) error {
+	return c.control(context.Background(), "bind", func(fd int) error {
 		return unix.Bind(fd, sa)
 	})
 }
@@ -512,208 +498,138 @@ func (c *Conn) Connect(ctx context.Context, sa unix.Sockaddr) (unix.Sockaddr, er
 
 // Getsockname wraps getsockname(2).
 func (c *Conn) Getsockname() (unix.Sockaddr, error) {
-	const op = "getsockname"
-
-	var (
-		sa  unix.Sockaddr
-		err error
-	)
-
-	doErr := c.control(context.Background(), op, func(fd int) error {
-		sa, err = unix.Getsockname(fd)
-		return err
-	})
-	if doErr != nil {
-		return nil, doErr
-	}
-
-	return sa, os.NewSyscallError(op, err)
+	return controlT(c, context.Background(), "getsockname", unix.Getsockname)
 }
 
 // Getpeername wraps getpeername(2).
 func (c *Conn) Getpeername() (unix.Sockaddr, error) {
-	const op = "getpeername"
-
-	var (
-		sa  unix.Sockaddr
-		err error
-	)
-
-	doErr := c.control(context.Background(), op, func(fd int) error {
-		sa, err = unix.Getpeername(fd)
-		return err
-	})
-	if doErr != nil {
-		return nil, doErr
-	}
-
-	return sa, os.NewSyscallError(op, err)
+	return controlT(c, context.Background(), "getpeername", unix.Getpeername)
 }
 
 // GetsockoptInt wraps getsockopt(2) for integer values.
 func (c *Conn) GetsockoptInt(level, opt int) (int, error) {
-	const op = "getsockopt"
-
-	var (
-		value int
-		err   error
-	)
-
-	doErr := c.control(context.Background(), op, func(fd int) error {
-		value, err = unix.GetsockoptInt(fd, level, opt)
-		return err
+	return controlT(c, context.Background(), "getsockopt", func(fd int) (int, error) {
+		return unix.GetsockoptInt(fd, level, opt)
 	})
-	if doErr != nil {
-		return 0, doErr
-	}
-
-	return value, os.NewSyscallError(op, err)
 }
 
 // Listen wraps listen(2).
 func (c *Conn) Listen(n int) error {
-	return c.controlErr(context.Background(), "listen", func(fd int) error {
+	return c.control(context.Background(), "listen", func(fd int) error {
 		return unix.Listen(fd, n)
 	})
 }
 
 // Recvmsg wraps recvmsg(2).
 func (c *Conn) Recvmsg(ctx context.Context, p, oob []byte, flags int) (int, int, int, unix.Sockaddr, error) {
-	const op = "recvmsg"
-
-	var (
+	type ret struct {
 		n, oobn, recvflags int
 		from               unix.Sockaddr
-		err                error
-	)
+	}
 
-	doErr := c.read(ctx, op, func(fd int) error {
-		n, oobn, recvflags, from, err = unix.Recvmsg(fd, p, oob, flags)
-		return err
+	r, err := readT(c, ctx, "recvmsg", func(fd int) (ret, error) {
+		n, oobn, recvflags, from, err := unix.Recvmsg(fd, p, oob, flags)
+		return ret{n, oobn, recvflags, from}, err
 	})
-
-	switch {
-	case doErr != nil:
-		return 0, 0, 0, nil, doErr
-	case n == 0 && err == nil && c.zeroReadIsEOF:
+	if r.n == 0 && err == nil && c.zeroReadIsEOF {
 		return 0, 0, 0, nil, io.EOF
 	}
 
-	return n, oobn, recvflags, from, os.NewSyscallError(op, err)
+	return r.n, r.oobn, r.recvflags, r.from, err
 }
 
 // Recvfrom wraps recvfrom(2).
 func (c *Conn) Recvfrom(ctx context.Context, p []byte, flags int) (int, unix.Sockaddr, error) {
-	const op = "recvfrom"
-
-	var (
+	type ret struct {
 		n    int
 		addr unix.Sockaddr
-		err  error
-	)
+	}
 
-	doErr := c.read(ctx, op, func(fd int) error {
-		n, addr, err = unix.Recvfrom(fd, p, flags)
-		return err
+	out, err := readT(c, ctx, "recvfrom", func(fd int) (ret, error) {
+		n, addr, err := unix.Recvfrom(fd, p, flags)
+		return ret{n, addr}, err
 	})
-
-	switch {
-	case doErr != nil:
-		return 0, nil, doErr
-	case n == 0 && err == nil && c.zeroReadIsEOF:
+	if out.n == 0 && err == nil && c.zeroReadIsEOF {
 		return 0, nil, io.EOF
 	}
 
-	return n, addr, os.NewSyscallError(op, err)
+	return out.n, out.addr, err
 }
 
 // Sendmsg wraps sendmsg(2).
 func (c *Conn) Sendmsg(ctx context.Context, p, oob []byte, to unix.Sockaddr, flags int) (int, error) {
-	var (
-		n   int
-		err error
-	)
-
-	doErr := c.writeErr(ctx, "sendmsg", func(fd int) error {
-		n, err = unix.SendmsgN(fd, p, oob, to, flags)
-		return err
+	return writeT(c, ctx, "sendmsg", func(fd int) (int, error) {
+		return unix.SendmsgN(fd, p, oob, to, flags)
 	})
-	if doErr != nil {
-		return 0, doErr
-	}
-
-	return n, err
 }
 
 // Sendto wraps sendto(2).
 func (c *Conn) Sendto(ctx context.Context, p []byte, flags int, to unix.Sockaddr) error {
-	return c.writeErr(ctx, "sendto", func(fd int) error {
+	return c.write(ctx, "sendto", func(fd int) error {
 		return unix.Sendto(fd, p, flags, to)
 	})
 }
 
 // SetsockoptInt wraps setsockopt(2) for integer values.
 func (c *Conn) SetsockoptInt(level, opt, value int) error {
-	return c.controlErr(context.Background(), "setsockopt", func(fd int) error {
+	return c.control(context.Background(), "setsockopt", func(fd int) error {
 		return unix.SetsockoptInt(fd, level, opt, value)
 	})
 }
 
 // Shutdown wraps shutdown(2).
 func (c *Conn) Shutdown(how int) error {
-	return c.controlErr(context.Background(), "shutdown", func(fd int) error {
+	return c.control(context.Background(), "shutdown", func(fd int) error {
 		return unix.Shutdown(fd, how)
 	})
 }
 
 // Conn low-level read/write/control functions. These functions mirror the
 // syscall.RawConn APIs but the input closures return errors rather than
-// booleans. Any syscalls invoked within f should return their error to allow
-// the Conn to check for readiness with the runtime network poller, or to retry
-// operations which may have been interrupted by EINTR or similar.
-//
-// Note that errors from the input closure functions are not propagated to the
-// error return values of read/write/control, and the caller is still
-// responsible for error handling.
+// booleans.
 
-// read executes f, a read function, against the associated file descriptor.
-// op is used to create an *os.SyscallError if the file descriptor is closed.
+// read wraps readT to execute a function and capture its error result. This is
+// a convenience wrapper for functions which don't return any extra values.
 //
 // It obeys context cancelation and the context must not be nil.
 func (c *Conn) read(ctx context.Context, op string, f func(fd int) error) error {
-	if atomic.LoadUint32(&c.closed) != 0 {
-		return os.NewSyscallError(op, unix.EBADF)
-	}
-
-	err := c.rc.Read(func(fd uintptr) bool {
-		select {
-		default:
-			return ready(f(int(fd)))
-		case <-ctx.Done():
-			return ready(ctx.Err())
-		}
+	_, err := readT(c, ctx, op, func(fd int) (struct{}, error) {
+		return struct{}{}, f(fd)
 	})
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	return err
 }
 
-// readErr wraps read to execute a function and capture its error result.
-// This is a convenience wrapper for functions which don't return any extra
-// values to capture in a closure.
+// readT executes c.rc.Read for op using the input function, returning a newly
+// allocated result T.
 //
 // It obeys context cancelation and the context must not be nil.
-func (c *Conn) readErr(ctx context.Context, op string, f func(fd int) error) error {
-	var err error
-	doErr := c.read(ctx, op, func(fd int) error {
-		return f(fd)
-	})
-	if doErr != nil {
-		return doErr
+func readT[T any](c *Conn, ctx context.Context, op string, f func(fd int) (T, error)) (T, error) {
+	if atomic.LoadUint32(&c.closed) != 0 {
+		// If the file descriptor is already closed, do nothing.
+		return *new(T), os.NewSyscallError(op, unix.EBADF)
 	}
 
-	return os.NewSyscallError(op, err)
+	var (
+		t   T
+		err error
+	)
+
+	doErr := c.rc.Read(func(fd uintptr) (done bool) {
+		if err = ctx.Err(); err != nil {
+			// Early exit due to context cancel.
+			return true
+		}
+
+		t, err = f(int(fd))
+		return ready(err)
+	})
+	if doErr != nil {
+		// Error from syscall.RawConn methods.
+		return *new(T), os.NewSyscallError(op, doErr)
+	}
+
+	// Result from user function.
+	return t, os.NewSyscallError(op, err)
 }
 
 // write executes f, a write function, against the associated file descriptor.
@@ -721,88 +637,89 @@ func (c *Conn) readErr(ctx context.Context, op string, f func(fd int) error) err
 //
 // It obeys context cancelation and the context must not be nil.
 func (c *Conn) write(ctx context.Context, op string, f func(fd int) error) error {
-	if atomic.LoadUint32(&c.closed) != 0 {
-		return os.NewSyscallError(op, unix.EBADF)
-	}
-
-	err := c.rc.Write(func(fd uintptr) (done bool) {
-		select {
-		default:
-			return ready(f(int(fd)))
-		case <-ctx.Done():
-			return ready(ctx.Err())
-		}
+	_, err := writeT(c, ctx, op, func(fd int) (struct{}, error) {
+		return struct{}{}, f(fd)
 	})
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	return err
 }
 
-// writeErr wraps write to execute a function and capture its error result.
-// This is a convenience wrapper for functions which don't return any extra
-// values to capture in a closure.
-//
-// It obeys context cancelation and the context must not be nil.
-func (c *Conn) writeErr(ctx context.Context, op string, f func(fd int) error) error {
-	var err error
-	doErr := c.write(ctx, op, func(fd int) error {
-		return f(fd)
-	})
-	if doErr != nil {
-		return doErr
+// writeT executes c.rc.Write for op using the input function, returning a newly
+// allocated result T.
+func writeT[T any](c *Conn, ctx context.Context, op string, f func(fd int) (T, error)) (T, error) {
+	if atomic.LoadUint32(&c.closed) != 0 {
+		// If the file descriptor is already closed, do nothing.
+		return *new(T), os.NewSyscallError(op, unix.EBADF)
 	}
 
-	return os.NewSyscallError(op, err)
+	var (
+		t   T
+		err error
+	)
+
+	doErr := c.rc.Write(func(fd uintptr) (done bool) {
+		if err = ctx.Err(); err != nil {
+			// Early exit due to context cancel.
+			return true
+		}
+
+		t, err = f(int(fd))
+		return ready(err)
+	})
+	if doErr != nil {
+		// Error from syscall.RawConn methods.
+		return *new(T), os.NewSyscallError(op, doErr)
+	}
+
+	// Result from user function.
+	return t, os.NewSyscallError(op, err)
 }
 
-// control executes f, a control function, against the associated file
-// descriptor. op is used to create an *os.SyscallError if the file descriptor
-// is closed.
-//
-// It obeys context cancelation and the context must not be nil.
+// control executes Conn.control for op using the input function.
 func (c *Conn) control(ctx context.Context, op string, f func(fd int) error) error {
+	_, err := controlT(c, ctx, op, func(fd int) (struct{}, error) {
+		return struct{}{}, f(fd)
+	})
+	return err
+}
+
+// controlT executes c.rc.Control for op using the input function, returning a
+// newly allocated result T.
+func controlT[T any](c *Conn, ctx context.Context, op string, f func(fd int) (T, error)) (T, error) {
 	if atomic.LoadUint32(&c.closed) != 0 {
-		return os.NewSyscallError(op, unix.EBADF)
+		// If the file descriptor is already closed, do nothing.
+		return *new(T), os.NewSyscallError(op, unix.EBADF)
 	}
 
-	var cerr error
-	err := c.rc.Control(func(fd uintptr) {
+	var (
+		t   T
+		err error
+	)
+
+	doErr := c.rc.Control(func(fd uintptr) {
 		// Repeatedly attempt the syscall(s) invoked by f until completion is
-		// indicated by the return value of ready.
+		// indicated by the return value of ready or the context is canceled.
+		//
+		// The last values for t and err are captured outside of the closure for
+		// use when the loop breaks.
 		for {
-			if err := ctx.Err(); err != nil {
-				cerr = err
+			if err = ctx.Err(); err != nil {
+				// Early exit due to context cancel.
 				return
 			}
-			if ready(f(int(fd))) {
+
+			t, err = f(int(fd))
+			if ready(err) {
 				return
 			}
 		}
 	})
-	if cerr != nil {
-		err = cerr
-	}
-
-	return err
-}
-
-// controlErr wraps control to execute a function and capture its error result.
-// This is a convenience wrapper for functions which don't return any extra
-// values to capture in a closure.
-//
-// It obeys context cancelation and the context must not be nil.
-func (c *Conn) controlErr(ctx context.Context, op string, f func(fd int) error) error {
-	var err error
-	doErr := c.control(ctx, op, func(fd int) error {
-		err = f(fd)
-		return err
-	})
 	if doErr != nil {
-		return doErr
+		// Error from syscall.RawConn methods.
+		return *new(T), os.NewSyscallError(op, doErr)
 	}
 
-	return os.NewSyscallError(op, err)
+	// Result from user function.
+	return t, os.NewSyscallError(op, err)
 }
 
 // ready indicates readiness based on the value of err.
