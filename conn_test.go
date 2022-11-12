@@ -123,6 +123,40 @@ func TestDialTCPContextDeadlineExceeded(t *testing.T) {
 	}
 }
 
+func TestListenerAcceptTCPContextCanceled(t *testing.T) {
+	l, err := sockettest.Listen(0, nil)
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer l.Close()
+
+	// Context is canceled before accept can take place.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = l.Context(ctx).Accept()
+	if diff := cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()); diff != "" {
+		t.Fatalf("unexpected accept error (-want +got):\n%s", diff)
+	}
+}
+
+func TestListenerAcceptTCPContextDeadlineExceeded(t *testing.T) {
+	l, err := sockettest.Listen(0, nil)
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer l.Close()
+
+	// Accept is canceled after the deadline passes.
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	_, err = l.Context(ctx).Accept()
+	if diff := cmp.Diff(context.DeadlineExceeded, err, cmpopts.EquateErrors()); diff != "" {
+		t.Fatalf("unexpected accept error (-want +got):\n%s", diff)
+	}
+}
+
 func TestFileConn(t *testing.T) {
 	// Use raw system calls to set up the socket since we assume anything being
 	// passed into a FileConn is set up by another system, such as systemd's

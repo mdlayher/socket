@@ -381,18 +381,39 @@ func New(fd int, name string) (*Conn, error) {
 //
 // If the operating system only supports accept(2) (which does not allow flags)
 // and flags is not zero, an error will be returned.
-func (c *Conn) Accept(flags int) (*Conn, unix.Sockaddr, error) {
+//
+// Accept obeys context cancelation and uses the deadline set on the context to
+// cancel accepting the next connection. If a deadline is set on ctx, this
+// deadline will override any previous deadlines set using SetDeadline or
+// SetReadDeadline. Upon return, the read deadline is cleared.
+func (c *Conn) Accept(ctx context.Context, flags int) (*Conn, unix.Sockaddr, error) {
+	// If the caller passed a context with a deadline set, use that deadline to
+	// wake up the runtime network poller on timeout.
+	if d, ok := ctx.Deadline(); ok {
+		if err := c.SetReadDeadline(d); err != nil {
+			return nil, nil, err
+		}
+
+		// Disarm the deadline after return.
+		defer func() { _ = c.SetReadDeadline(time.Time{}) }()
+	}
+
 	type ret struct {
 		nfd int
 		sa  unix.Sockaddr
 	}
 
-	r, err := readT(c, context.Background(), sysAccept, func(fd int) (ret, error) {
+	r, err := readT(c, ctx, sysAccept, func(fd int) (ret, error) {
 		// Either accept(2) or accept4(2) depending on the OS.
 		nfd, sa, err := accept(fd, flags|socketFlags)
 		return ret{nfd, sa}, err
 	})
+	if err := ctx.Err(); err != nil {
+		// Possibly woken up due to context cancelation.
+		return nil, nil, err
+	}
 	if err != nil {
+		// internal/poll or user call error.
 		return nil, nil, err
 	}
 

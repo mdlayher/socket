@@ -78,7 +78,7 @@ func (l *Listener) Addr() net.Addr { return l.addr }
 func (l *Listener) Close() error   { return l.c.Close() }
 func (l *Listener) Accept() (net.Conn, error) {
 	// SOCK_CLOEXEC and SOCK_NONBLOCK set automatically by Accept when possible.
-	c, rsa, err := l.c.Accept(0)
+	c, rsa, err := l.c.Accept(context.Background(), 0)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +97,8 @@ func (l *Listener) Accept() (net.Conn, error) {
 	}, nil
 }
 
-// A contextListener passes its context into accepted Conns for cancelation.
+// A contextListener passes its context into Accept and accepted Conns for
+// cancelation.
 type contextListener struct {
 	ctx context.Context
 	*Listener
@@ -111,12 +112,25 @@ func (l *Listener) Context(ctx context.Context) net.Listener {
 }
 
 func (cl *contextListener) Accept() (net.Conn, error) {
-	c, err := cl.Listener.Accept()
+	c, rsa, err := cl.c.Accept(cl.ctx, 0)
 	if err != nil {
 		return nil, err
 	}
 
-	return c.(*Conn).Context(cl.ctx), nil
+	lsa, err := c.Getsockname()
+	if err != nil {
+		// Don't leak the Conn if the system call fails.
+		_ = c.Close()
+		return nil, err
+	}
+
+	cc := &Conn{
+		local:  newTCPAddr(lsa),
+		remote: newTCPAddr(rsa),
+		c:      c,
+	}
+
+	return cc.Context(cl.ctx), nil
 }
 
 // A Conn is a net.Conn which can be extended with context support.
