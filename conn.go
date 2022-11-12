@@ -11,6 +11,15 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// Lock in an expected public interface for convenience.
+var _ interface {
+	io.ReadWriteCloser
+	syscall.Conn
+	SetDeadline(t time.Time) error
+	SetReadDeadline(t time.Time) error
+	SetWriteDeadline(t time.Time) error
+} = &Conn{}
+
 // A Conn is a low-level network connection which integrates with Go's runtime
 // network poller to provide asynchronous I/O and deadline support.
 type Conn struct {
@@ -88,12 +97,11 @@ func (c *Conn) CloseRead() error { return c.Shutdown(unix.SHUT_RD) }
 func (c *Conn) CloseWrite() error { return c.Shutdown(unix.SHUT_WR) }
 
 // Read reads directly from the underlying file descriptor.
-// If context ctx is nil, the runtime poller will be used.
-func (c *Conn) Read(ctx context.Context, b []byte) (int, error) {
-	if ctx == nil {
-		return c.fd.Read(b)
-	}
+func (c *Conn) Read(b []byte) (int, error) { return c.fd.Read(b) }
 
+// ReadContext reads from the underlying file descriptor with added support for
+// context cancelation.
+func (c *Conn) ReadContext(ctx context.Context, b []byte) (int, error) {
 	var (
 		n   int
 		err error
@@ -118,12 +126,11 @@ func (c *Conn) Read(ctx context.Context, b []byte) (int, error) {
 }
 
 // Write writes directly to the underlying file descriptor.
-// If context ctx is nil, the runtime poller will be used.
-func (c *Conn) Write(ctx context.Context, b []byte) (int, error) {
-	if ctx == nil {
-		return c.fd.Write(b)
-	}
+func (c *Conn) Write(b []byte) (int, error) { return c.fd.Write(b) }
 
+// WriteContext writes to the underlying file descriptor with added support for
+// context cancelation.
+func (c *Conn) WriteContext(ctx context.Context, b []byte) (int, error) {
 	var (
 		n, nn int
 		err   error
@@ -671,7 +678,8 @@ func (c *Conn) Shutdown(how int) error {
 
 // read executes f, a read function, against the associated file descriptor.
 // op is used to create an *os.SyscallError if the file descriptor is closed.
-// It takes context ctx for early cancelation, ctx may be nil.
+//
+// It obeys context cancelation and the context must not be nil.
 func (c *Conn) read(ctx context.Context, op string, f func(fd int) error) error {
 	if atomic.LoadUint32(&c.closed) != 0 {
 		return os.NewSyscallError(op, unix.EBADF)
@@ -694,7 +702,8 @@ func (c *Conn) read(ctx context.Context, op string, f func(fd int) error) error 
 // readErr wraps read to execute a function and capture its error result.
 // This is a convenience wrapper for functions which don't return any extra
 // values to capture in a closure.
-// It takes context ctx for early cancelation, ctx may be nil.
+//
+// It obeys context cancelation and the context must not be nil.
 func (c *Conn) readErr(ctx context.Context, op string, f func(fd int) error) error {
 	var err error
 	doErr := c.read(ctx, op, func(fd int) error {
@@ -709,7 +718,8 @@ func (c *Conn) readErr(ctx context.Context, op string, f func(fd int) error) err
 
 // write executes f, a write function, against the associated file descriptor.
 // op is used to create an *os.SyscallError if the file descriptor is closed.
-// It takes context ctx for early cancelation, ctx may be nil.
+//
+// It obeys context cancelation and the context must not be nil.
 func (c *Conn) write(ctx context.Context, op string, f func(fd int) error) error {
 	if atomic.LoadUint32(&c.closed) != 0 {
 		return os.NewSyscallError(op, unix.EBADF)
@@ -731,8 +741,9 @@ func (c *Conn) write(ctx context.Context, op string, f func(fd int) error) error
 
 // writeErr wraps write to execute a function and capture its error result.
 // This is a convenience wrapper for functions which don't return any extra
-// values to capture in a closure. It takes context ctx for early cancelation,
-// ctx may be nil.
+// values to capture in a closure.
+//
+// It obeys context cancelation and the context must not be nil.
 func (c *Conn) writeErr(ctx context.Context, op string, f func(fd int) error) error {
 	var err error
 	doErr := c.write(ctx, op, func(fd int) error {
@@ -747,7 +758,9 @@ func (c *Conn) writeErr(ctx context.Context, op string, f func(fd int) error) er
 
 // control executes f, a control function, against the associated file
 // descriptor. op is used to create an *os.SyscallError if the file descriptor
-// is closed. It takes context ctx for early cancelation, ctx may be nil.
+// is closed.
+//
+// It obeys context cancelation and the context must not be nil.
 func (c *Conn) control(ctx context.Context, op string, f func(fd int) error) error {
 	if atomic.LoadUint32(&c.closed) != 0 {
 		return os.NewSyscallError(op, unix.EBADF)
@@ -776,8 +789,9 @@ func (c *Conn) control(ctx context.Context, op string, f func(fd int) error) err
 
 // controlErr wraps control to execute a function and capture its error result.
 // This is a convenience wrapper for functions which don't return any extra
-// values to capture in a closure. It takes context ctx for early cancelation,
-// ctx may be nil.
+// values to capture in a closure.
+//
+// It obeys context cancelation and the context must not be nil.
 func (c *Conn) controlErr(ctx context.Context, op string, f func(fd int) error) error {
 	var err error
 	doErr := c.control(ctx, op, func(fd int) error {
@@ -805,6 +819,7 @@ func ready(err error) bool {
 		// for internal/poll.FD.RawRead for more details.
 		return false
 	case context.Canceled, context.DeadlineExceeded:
+		// The caller canceled the operation.
 		return true
 	default:
 		// Ready regardless of whether there was an error or no error.

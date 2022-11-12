@@ -14,7 +14,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-type listener struct {
+// A Listener is a net.Listener which can be extended with context support.
+type Listener struct {
 	addr *net.TCPAddr
 	c    *socket.Conn
 	ctx  context.Context
@@ -23,7 +24,7 @@ type listener struct {
 // Listen creates an IPv6 TCP net.Listener backed by a *socket.Conn on the
 // specified port with optional configuration. Context ctx will be passed
 // to accept and accepted connections.
-func Listen(ctx context.Context, port int, cfg *socket.Config) (net.Listener, error) {
+func Listen(port int, cfg *socket.Config) (*Listener, error) {
 	c, err := socket.Socket(unix.AF_INET6, unix.SOCK_STREAM, 0, "tcpv6-server", cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open socket: %v", err)
@@ -48,16 +49,15 @@ func Listen(ctx context.Context, port int, cfg *socket.Config) (net.Listener, er
 		return nil, fmt.Errorf("failed to getsockname: %v", err)
 	}
 
-	return &listener{
+	return &Listener{
 		addr: newTCPAddr(sa),
 		c:    c,
-		ctx:  ctx,
 	}, nil
 }
 
 // FileListener creates an IPv6 TCP net.Listener backed by a *socket.Conn from
 // the input file.
-func FileListener(ctx context.Context, f *os.File) (net.Listener, error) {
+func FileListener(f *os.File) (*Listener, error) {
 	c, err := socket.FileConn(f, "tcpv6-server")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file conn: %v", err)
@@ -69,16 +69,15 @@ func FileListener(ctx context.Context, f *os.File) (net.Listener, error) {
 		return nil, fmt.Errorf("failed to getsockname: %v", err)
 	}
 
-	return &listener{
+	return &Listener{
 		addr: newTCPAddr(sa),
 		c:    c,
-		ctx:  ctx,
 	}, nil
 }
 
-func (l *listener) Addr() net.Addr { return l.addr }
-func (l *listener) Close() error   { return l.c.Close() }
-func (l *listener) Accept() (net.Conn, error) {
+func (l *Listener) Addr() net.Addr { return l.addr }
+func (l *Listener) Close() error   { return l.c.Close() }
+func (l *Listener) Accept() (net.Conn, error) {
 	// SOCK_CLOEXEC and SOCK_NONBLOCK set automatically by Accept when possible.
 	c, rsa, err := l.c.Accept(0)
 	if err != nil {
@@ -92,15 +91,37 @@ func (l *listener) Accept() (net.Conn, error) {
 		return nil, err
 	}
 
-	return &conn{
+	return &Conn{
 		local:  newTCPAddr(lsa),
 		remote: newTCPAddr(rsa),
 		c:      c,
-		ctx:    l.ctx,
 	}, nil
 }
 
-type conn struct {
+// A contextListener passes its context into accepted Conns for cancelation.
+type contextListener struct {
+	ctx context.Context
+	*Listener
+}
+
+func (l *Listener) Context(ctx context.Context) net.Listener {
+	return &contextListener{
+		ctx:      ctx,
+		Listener: l,
+	}
+}
+
+func (cl *contextListener) Accept() (net.Conn, error) {
+	c, err := cl.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+
+	return c.(*Conn).Context(cl.ctx), nil
+}
+
+// A Conn is a net.Conn which can be extended with context support.
+type Conn struct {
 	local, remote *net.TCPAddr
 	c             *socket.Conn
 	ctx           context.Context
@@ -108,7 +129,7 @@ type conn struct {
 
 // Dial creates an IPv6 TCP net.Conn backed by a *socket.Conn with optional
 // configuration.
-func Dial(ctx context.Context, addr net.Addr, cfg *socket.Config) (net.Conn, error) {
+func Dial(addr net.Addr, cfg *socket.Config) (*Conn, error) {
 	ta, ok := addr.(*net.TCPAddr)
 	if !ok {
 		return nil, fmt.Errorf("expected *net.TCPAddr, but got: %T", addr)
@@ -126,7 +147,7 @@ func Dial(ctx context.Context, addr net.Addr, cfg *socket.Config) (net.Conn, err
 	// Be sure to close the Conn if any of the system calls fail before we
 	// return the Conn to the caller.
 
-	rsa, err := c.Connect(ctx, &sa)
+	rsa, err := c.Connect(context.Background(), &sa)
 	if err != nil {
 		_ = c.Close()
 		// Don't wrap, we want the raw error for tests.
@@ -139,30 +160,52 @@ func Dial(ctx context.Context, addr net.Addr, cfg *socket.Config) (net.Conn, err
 		return nil, err
 	}
 
-	return &conn{
+	return &Conn{
 		local:  newTCPAddr(lsa),
 		remote: newTCPAddr(rsa),
 		c:      c,
-		ctx:    ctx,
 	}, nil
 }
 
-func (c *conn) Close() error                       { return c.c.Close() }
-func (c *conn) CloseRead() error                   { return c.c.CloseRead() }
-func (c *conn) CloseWrite() error                  { return c.c.CloseWrite() }
-func (c *conn) LocalAddr() net.Addr                { return c.local }
-func (c *conn) RemoteAddr() net.Addr               { return c.remote }
-func (c *conn) SetDeadline(t time.Time) error      { return c.c.SetDeadline(t) }
-func (c *conn) SetReadDeadline(t time.Time) error  { return c.c.SetReadDeadline(t) }
-func (c *conn) SetWriteDeadline(t time.Time) error { return c.c.SetWriteDeadline(t) }
+func (c *Conn) Close() error                       { return c.c.Close() }
+func (c *Conn) CloseRead() error                   { return c.c.CloseRead() }
+func (c *Conn) CloseWrite() error                  { return c.c.CloseWrite() }
+func (c *Conn) LocalAddr() net.Addr                { return c.local }
+func (c *Conn) RemoteAddr() net.Addr               { return c.remote }
+func (c *Conn) SetDeadline(t time.Time) error      { return c.c.SetDeadline(t) }
+func (c *Conn) SetReadDeadline(t time.Time) error  { return c.c.SetReadDeadline(t) }
+func (c *Conn) SetWriteDeadline(t time.Time) error { return c.c.SetWriteDeadline(t) }
 
-func (c *conn) Read(b []byte) (n int, err error) {
-	n, err = c.c.Read(c.ctx, b)
+func (c *Conn) Read(b []byte) (int, error) {
+	n, err := c.c.Read(b)
 	return n, opError("read", err)
 }
 
-func (c *conn) Write(b []byte) (n int, err error) {
-	n, err = c.c.Write(c.ctx, b)
+func (c *Conn) Write(b []byte) (int, error) {
+	n, err := c.c.Write(b)
+	return n, opError("write", err)
+}
+
+// A contextConn passes its context into a Conn for cancelation.
+type contextConn struct {
+	ctx context.Context
+	*Conn
+}
+
+func (c *Conn) Context(ctx context.Context) net.Conn {
+	return &contextConn{
+		ctx:  ctx,
+		Conn: c,
+	}
+}
+
+func (cc *contextConn) Read(b []byte) (int, error) {
+	n, err := cc.c.ReadContext(cc.ctx, b)
+	return n, opError("read", err)
+}
+
+func (cc *contextConn) Write(b []byte) (int, error) {
+	n, err := cc.c.WriteContext(cc.ctx, b)
 	return n, opError("write", err)
 }
 

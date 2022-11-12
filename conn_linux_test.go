@@ -71,7 +71,7 @@ func TestLinuxConnBuffers(t *testing.T) {
 }
 
 func TestLinuxNetworkNamespaces(t *testing.T) {
-	l, err := sockettest.Listen(context.Background(), 0, nil)
+	l, err := sockettest.Listen(0, nil)
 	if err != nil {
 		t.Fatalf("failed to create listener: %v", err)
 	}
@@ -99,7 +99,6 @@ func TestLinuxNetworkNamespaces(t *testing.T) {
 		// This OS thread has been moved to a different network namespace and
 		// thus we should also be able to start a listener on the same port.
 		l, err := sockettest.Listen(
-			context.Background(),
 			l.Addr().(*net.TCPAddr).Port,
 			&socket.Config{NetNS: ns.FD()},
 		)
