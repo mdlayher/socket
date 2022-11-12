@@ -1,6 +1,16 @@
 # CHANGELOG
 
+## v0.4.0
+
+**This is the first release of package socket that only supports Go 1.18+.
+Users on older versions of Go must use v0.3.0.**
+
+- [Improvement]: drop support for older versions of Go so we can begin using
+  modern versions of `x/sys` and other dependencies.
+
 ## v0.3.0
+
+**This is the last release of package socket that supports Go 1.17 and below.**
 
 - [New API/API change] [PR](https://github.com/mdlayher/socket/pull/8):
   numerous `socket.Conn` methods now support context cancelation. Future
