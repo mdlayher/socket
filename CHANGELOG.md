@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## v0.3.0
+
+- [New API/API change] [PR](https://github.com/mdlayher/socket/pull/8):
+  numerous `socket.Conn` methods now support context cancelation. Future
+  releases will continue adding support as needed.
+  - New `ReadContext` and `WriteContext` methods.
+  - `Connect`, `Recvfrom`, `Recvmsg`, `Sendmsg`, and `Sendto` methods now accept
+    a context.
+  - `Sendto` parameter order was also fixed to match the underlying syscall.
+
 ## v0.2.3
 
 - [New API] [commit](https://github.com/mdlayher/socket/commit/a425d96e0f772c053164f8ce4c9c825380a98086):
