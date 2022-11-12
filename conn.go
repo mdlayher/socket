@@ -599,39 +599,6 @@ func (c *Conn) read(ctx context.Context, op string, f func(fd int) error) error 
 	return err
 }
 
-// readT executes c.rc.Read for op using the input function, returning a newly
-// allocated result T.
-//
-// It obeys context cancelation and the context must not be nil.
-func readT[T any](c *Conn, ctx context.Context, op string, f func(fd int) (T, error)) (T, error) {
-	if atomic.LoadUint32(&c.closed) != 0 {
-		// If the file descriptor is already closed, do nothing.
-		return *new(T), os.NewSyscallError(op, unix.EBADF)
-	}
-
-	var (
-		t   T
-		err error
-	)
-
-	doErr := c.rc.Read(func(fd uintptr) (done bool) {
-		if err = ctx.Err(); err != nil {
-			// Early exit due to context cancel.
-			return true
-		}
-
-		t, err = f(int(fd))
-		return ready(err)
-	})
-	if doErr != nil {
-		// Error from syscall.RawConn methods.
-		return *new(T), os.NewSyscallError(op, doErr)
-	}
-
-	// Result from user function.
-	return t, os.NewSyscallError(op, err)
-}
-
 // write executes f, a write function, against the associated file descriptor.
 // op is used to create an *os.SyscallError if the file descriptor is closed.
 //
@@ -643,12 +610,48 @@ func (c *Conn) write(ctx context.Context, op string, f func(fd int) error) error
 	return err
 }
 
+// readT executes c.rc.Read for op using the input function, returning a newly
+// allocated result T.
+//
+// It obeys context cancelation and the context must not be nil.
+func readT[T any](c *Conn, ctx context.Context, op string, f func(fd int) (T, error)) (T, error) {
+	return rwT(c, ctx, read, op, f)
+}
+
 // writeT executes c.rc.Write for op using the input function, returning a newly
 // allocated result T.
+//
+// It obeys context cancelation and the context must not be nil.
 func writeT[T any](c *Conn, ctx context.Context, op string, f func(fd int) (T, error)) (T, error) {
+	return rwT(c, ctx, write, op, f)
+}
+
+// readWrite indicates if an operation intends to read or write.
+type readWrite bool
+
+// Possible readWrite values.
+const (
+	read  readWrite = false
+	write readWrite = true
+)
+
+// rwT executes c.rc.Read or c.rc.Write (depending on the value of rw) for op
+// using the input function, returning a newly allocated result T.
+//
+// It obeys context cancelation and the context must not be nil.
+func rwT[T any](c *Conn, ctx context.Context, rw readWrite, op string, f func(fd int) (T, error)) (T, error) {
 	if atomic.LoadUint32(&c.closed) != 0 {
-		// If the file descriptor is already closed, do nothing.
-		return *new(T), os.NewSyscallError(op, unix.EBADF)
+		// If the file descriptor is already closed, do nothing. Mimics the
+		// error returned by internal/poll in the stdlib by not wrapping in
+		// os.NewSyscallError.
+		return *new(T), unix.EBADF
+	}
+
+	var readWrite func(func(uintptr) bool) error
+	if rw == write {
+		readWrite = c.rc.Write
+	} else {
+		readWrite = c.rc.Read
 	}
 
 	var (
@@ -656,7 +659,7 @@ func writeT[T any](c *Conn, ctx context.Context, op string, f func(fd int) (T, e
 		err error
 	)
 
-	doErr := c.rc.Write(func(fd uintptr) (done bool) {
+	doErr := readWrite(func(fd uintptr) bool {
 		if err = ctx.Err(); err != nil {
 			// Early exit due to context cancel.
 			return true
@@ -686,8 +689,10 @@ func (c *Conn) control(ctx context.Context, op string, f func(fd int) error) err
 // newly allocated result T.
 func controlT[T any](c *Conn, ctx context.Context, op string, f func(fd int) (T, error)) (T, error) {
 	if atomic.LoadUint32(&c.closed) != 0 {
-		// If the file descriptor is already closed, do nothing.
-		return *new(T), os.NewSyscallError(op, unix.EBADF)
+		// If the file descriptor is already closed, do nothing. Mimics the
+		// error returned by internal/poll in the stdlib by not wrapping in
+		// os.NewSyscallError.
+		return *new(T), unix.EBADF
 	}
 
 	var (
