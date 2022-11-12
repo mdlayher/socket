@@ -2,9 +2,9 @@ package socket_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"net"
 	"os"
@@ -21,10 +21,54 @@ import (
 )
 
 func TestConn(t *testing.T) {
-	nettest.TestConn(t, makePipe)
+	tests := []struct {
+		name string
+		pipe nettest.MakePipe
+	}{
+		// Standard library plumbing.
+		{
+			name: "basic",
+			pipe: makePipe(
+				func() (net.Listener, error) {
+					return sockettest.Listen(0, nil)
+				},
+				func(addr net.Addr) (net.Conn, error) {
+					return sockettest.Dial(addr, nil)
+				},
+			),
+		},
+		// Our own implementations which have context cancelation support.
+		{
+			name: "context",
+			pipe: makePipe(
+				func() (net.Listener, error) {
+					l, err := sockettest.Listen(0, nil)
+					if err != nil {
+						return nil, err
+					}
 
-	// Our own extensions to TestConn.
-	t.Run("CloseReadWrite", func(t *testing.T) { timeoutWrapper(t, makePipe, testCloseReadWrite) })
+					return l.Context(context.Background()), nil
+				},
+				func(addr net.Addr) (net.Conn, error) {
+					c, err := sockettest.Dial(addr, nil)
+					if err != nil {
+						return nil, err
+					}
+
+					return c.Context(context.Background()), nil
+				},
+			),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nettest.TestConn(t, tt.pipe)
+
+			// Our own extensions to TestConn.
+			t.Run("CloseReadWrite", func(t *testing.T) { timeoutWrapper(t, tt.pipe, testCloseReadWrite) })
+		})
+	}
 }
 
 func TestDialTCPNoListener(t *testing.T) {
@@ -109,41 +153,46 @@ func TestFileConn(t *testing.T) {
 // Copyright 2016 The Go Authors. All rights reserved. Use of this source
 // code is governed by a BSD-style license that can be found in the LICENSE
 // file.
-func makePipe() (c1, c2 net.Conn, stop func(), err error) {
-	ln, err := sockettest.Listen(0, nil)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	// Start a connection between two endpoints.
-	var err1, err2 error
-	done := make(chan bool)
-	go func() {
-		c2, err2 = ln.Accept()
-		close(done)
-	}()
-	c1, err1 = sockettest.Dial(ln.Addr(), nil)
-	<-done
-
-	stop = func() {
-		if err1 == nil {
-			c1.Close()
+func makePipe(
+	listen func() (net.Listener, error),
+	dial func(addr net.Addr) (net.Conn, error),
+) nettest.MakePipe {
+	return func() (c1, c2 net.Conn, stop func(), err error) {
+		ln, err := listen()
+		if err != nil {
+			return nil, nil, nil, err
 		}
-		if err2 == nil {
-			c2.Close()
-		}
-		ln.Close()
-	}
 
-	switch {
-	case err1 != nil:
-		stop()
-		return nil, nil, nil, err1
-	case err2 != nil:
-		stop()
-		return nil, nil, nil, err2
-	default:
-		return c1, c2, stop, nil
+		// Start a connection between two endpoints.
+		var err1, err2 error
+		done := make(chan bool)
+		go func() {
+			c2, err2 = ln.Accept()
+			close(done)
+		}()
+		c1, err1 = dial(ln.Addr())
+		<-done
+
+		stop = func() {
+			if err1 == nil {
+				c1.Close()
+			}
+			if err2 == nil {
+				c2.Close()
+			}
+			ln.Close()
+		}
+
+		switch {
+		case err1 != nil:
+			stop()
+			return nil, nil, nil, err1
+		case err2 != nil:
+			stop()
+			return nil, nil, nil, err2
+		default:
+			return c1, c2, stop, nil
+		}
 	}
 }
 
@@ -207,7 +256,7 @@ func testCloseReadWrite(t *testing.T, c1, c2 net.Conn) {
 			t.Errorf("unexpected cc1.CloseWrite error: %v", err)
 		}
 		_, err := cc1.Write(b)
-		if nerr, ok := err.(net.Error); !ok || nerr.Temporary() {
+		if nerr, ok := err.(net.Error); !ok || nerr.Timeout() {
 			t.Errorf("unexpected final cc1.Write error: %v", err)
 		}
 	}()
@@ -217,7 +266,7 @@ func testCloseReadWrite(t *testing.T, c1, c2 net.Conn) {
 
 		// Reading succeeds at first but should result in an EOF error after
 		// closing the read side of the net.Conn.
-		if err := chunkedCopy(ioutil.Discard, cc2); err != nil {
+		if err := chunkedCopy(io.Discard, cc2); err != nil {
 			t.Errorf("unexpected initial cc2.Read error: %v", err)
 		}
 		if err := cc2.CloseRead(); err != nil {

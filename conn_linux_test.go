@@ -4,6 +4,7 @@
 package socket_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -139,7 +140,7 @@ func TestLinuxDialVsockNoListener(t *testing.T) {
 
 	// Given a (hopefully) non-existent listener on localhost, expect
 	// ECONNRESET.
-	_, err = c.Connect(&unix.SockaddrVM{
+	_, err = c.Connect(context.Background(), &unix.SockaddrVM{
 		CID:  unix.VMADDR_CID_LOCAL,
 		Port: math.MaxUint32,
 	})
