@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/mdlayher/socket/internal/sockettest"
 	"golang.org/x/net/nettest"
 	"golang.org/x/sync/errgroup"
@@ -33,7 +34,7 @@ func TestConn(t *testing.T) {
 					return sockettest.Listen(0, nil)
 				},
 				func(addr net.Addr) (net.Conn, error) {
-					return sockettest.Dial(addr, nil)
+					return sockettest.Dial(context.Background(), addr, nil)
 				},
 			),
 		},
@@ -50,12 +51,14 @@ func TestConn(t *testing.T) {
 					return l.Context(context.Background()), nil
 				},
 				func(addr net.Addr) (net.Conn, error) {
-					c, err := sockettest.Dial(addr, nil)
+					ctx := context.Background()
+
+					c, err := sockettest.Dial(ctx, addr, nil)
 					if err != nil {
 						return nil, err
 					}
 
-					return c.Context(context.Background()), nil
+					return c.Context(ctx), nil
 				},
 			),
 		},
@@ -78,13 +81,44 @@ func TestDialTCPNoListener(t *testing.T) {
 	//
 	// Given a (hopefully) non-existent listener on localhost, expect
 	// ECONNREFUSED.
-	_, err := sockettest.Dial(&net.TCPAddr{
+	_, err := sockettest.Dial(context.Background(), &net.TCPAddr{
 		IP:   net.IPv6loopback,
 		Port: math.MaxUint16,
 	}, nil)
 
 	want := os.NewSyscallError("connect", unix.ECONNREFUSED)
 	if diff := cmp.Diff(want, err); diff != "" {
+		t.Fatalf("unexpected connect error (-want +got):\n%s", diff)
+	}
+}
+
+func TestDialTCPContextCanceled(t *testing.T) {
+	// Context is canceled before any dialing can take place.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := sockettest.Dial(ctx, &net.TCPAddr{
+		IP:   net.IPv6loopback,
+		Port: math.MaxUint16,
+	}, nil)
+
+	if diff := cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()); diff != "" {
+		t.Fatalf("unexpected connect error (-want +got):\n%s", diff)
+	}
+}
+
+func TestDialTCPContextDeadlineExceeded(t *testing.T) {
+	// Dialing is canceled after the deadline passes. We try to connect to the
+	// IPv6 example address since it appears to not return "connection refused".
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	_, err := sockettest.Dial(ctx, &net.TCPAddr{
+		IP:   net.ParseIP("2008:db8::1"),
+		Port: math.MaxUint16,
+	}, nil)
+
+	if diff := cmp.Diff(context.DeadlineExceeded, err, cmpopts.EquateErrors()); diff != "" {
 		t.Fatalf("unexpected connect error (-want +got):\n%s", diff)
 	}
 }

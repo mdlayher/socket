@@ -127,7 +127,7 @@ type Conn struct {
 
 // Dial creates an IPv6 TCP net.Conn backed by a *socket.Conn with optional
 // configuration.
-func Dial(addr net.Addr, cfg *socket.Config) (*Conn, error) {
+func Dial(ctx context.Context, addr net.Addr, cfg *socket.Config) (*Conn, error) {
 	ta, ok := addr.(*net.TCPAddr)
 	if !ok {
 		return nil, fmt.Errorf("expected *net.TCPAddr, but got: %T", addr)
@@ -145,7 +145,7 @@ func Dial(addr net.Addr, cfg *socket.Config) (*Conn, error) {
 	// Be sure to close the Conn if any of the system calls fail before we
 	// return the Conn to the caller.
 
-	rsa, err := c.Connect(context.Background(), &sa)
+	rsa, err := c.Connect(ctx, &sa)
 	if err != nil {
 		_ = c.Close()
 		// Don't wrap, we want the raw error for tests.

@@ -416,6 +416,11 @@ func (c *Conn) Bind(sa unix.Sockaddr) error {
 // Connect wraps connect(2). In order to verify that the underlying socket is
 // connected to a remote peer, Connect calls getpeername(2) and returns the
 // unix.Sockaddr from that call.
+//
+// Connect obeys context cancelation and uses the deadline set on the context to
+// cancel connecting to a remote peer. If a deadline is set on ctx, this
+// deadline will override any previous deadlines set using SetDeadline or
+// SetWriteDeadline. Upon return, the write deadline is cleared.
 func (c *Conn) Connect(ctx context.Context, sa unix.Sockaddr) (unix.Sockaddr, error) {
 	const op = "connect"
 
@@ -423,6 +428,17 @@ func (c *Conn) Connect(ctx context.Context, sa unix.Sockaddr) (unix.Sockaddr, er
 	// listeners by calling Connect multiple times results in ECONNRESET for the
 	// first and nil error for subsequent calls. Do we need to memoize the
 	// error? Check what the stdlib behavior is.
+
+	// If the caller passed a context with a deadline set, use that deadline to
+	// wake up the runtime network poller on timeout.
+	if d, ok := ctx.Deadline(); ok {
+		if err := c.SetWriteDeadline(d); err != nil {
+			return nil, err
+		}
+
+		// Disarm the deadline after return.
+		defer func() { _ = c.SetWriteDeadline(time.Time{}) }()
+	}
 
 	var (
 		// Track progress between invocations of the write closure. We don't
@@ -445,9 +461,6 @@ func (c *Conn) Connect(ctx context.Context, sa unix.Sockaddr) (unix.Sockaddr, er
 		// Subsequent calls: the runtime network poller indicates fd is
 		// writable. Check for errno.
 		errno, gerr := c.GetsockoptInt(unix.SOL_SOCKET, unix.SO_ERROR)
-		if err := ctx.Err(); err != nil {
-			return err
-		}
 		if gerr != nil {
 			return gerr
 		}
@@ -465,9 +478,6 @@ func (c *Conn) Connect(ctx context.Context, sa unix.Sockaddr) (unix.Sockaddr, er
 		// poller to spuriously wake us and return errno 0 for SO_ERROR.
 		// Make sure we are actually connected to a peer.
 		peer, err := c.Getpeername()
-		if err := ctx.Err(); err != nil {
-			return err
-		}
 		if err != nil {
 			// internal/poll unconditionally goes back to WaitWrite.
 			// Synthesize an error that will do the same for us.
@@ -478,7 +488,12 @@ func (c *Conn) Connect(ctx context.Context, sa unix.Sockaddr) (unix.Sockaddr, er
 		rsa = peer
 		return nil
 	})
+	if err := ctx.Err(); err != nil {
+		// Possibly woken up due to context cancelation.
+		return nil, err
+	}
 	if doErr != nil {
+		// internal/poll error.
 		return nil, doErr
 	}
 
