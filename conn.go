@@ -641,10 +641,8 @@ const (
 // It obeys context cancelation and the context must not be nil.
 func rwT[T any](c *Conn, ctx context.Context, rw readWrite, op string, f func(fd int) (T, error)) (T, error) {
 	if atomic.LoadUint32(&c.closed) != 0 {
-		// If the file descriptor is already closed, do nothing. Mimics the
-		// error returned by internal/poll in the stdlib by not wrapping in
-		// os.NewSyscallError.
-		return *new(T), unix.EBADF
+		// If the file descriptor is already closed, do nothing.
+		return *new(T), os.NewSyscallError(op, unix.EBADF)
 	}
 
 	var readWrite func(func(uintptr) bool) error
@@ -669,8 +667,9 @@ func rwT[T any](c *Conn, ctx context.Context, rw readWrite, op string, f func(fd
 		return ready(err)
 	})
 	if doErr != nil {
-		// Error from syscall.RawConn methods.
-		return *new(T), os.NewSyscallError(op, doErr)
+		// Error from syscall.RawConn methods. Conventionally the standard
+		// library does not wrap internal/poll errors in os.NewSyscallError.
+		return *new(T), doErr
 	}
 
 	// Result from user function.
@@ -689,10 +688,8 @@ func (c *Conn) control(ctx context.Context, op string, f func(fd int) error) err
 // newly allocated result T.
 func controlT[T any](c *Conn, ctx context.Context, op string, f func(fd int) (T, error)) (T, error) {
 	if atomic.LoadUint32(&c.closed) != 0 {
-		// If the file descriptor is already closed, do nothing. Mimics the
-		// error returned by internal/poll in the stdlib by not wrapping in
-		// os.NewSyscallError.
-		return *new(T), unix.EBADF
+		// If the file descriptor is already closed, do nothing.
+		return *new(T), os.NewSyscallError(op, unix.EBADF)
 	}
 
 	var (
@@ -719,8 +716,9 @@ func controlT[T any](c *Conn, ctx context.Context, op string, f func(fd int) (T,
 		}
 	})
 	if doErr != nil {
-		// Error from syscall.RawConn methods.
-		return *new(T), os.NewSyscallError(op, doErr)
+		// Error from syscall.RawConn methods. Conventionally the standard
+		// library does not wrap internal/poll errors in os.NewSyscallError.
+		return *new(T), doErr
 	}
 
 	// Result from user function.
