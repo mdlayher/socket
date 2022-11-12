@@ -18,7 +18,6 @@ import (
 type Listener struct {
 	addr *net.TCPAddr
 	c    *socket.Conn
-	ctx  context.Context
 }
 
 // Listen creates an IPv6 TCP net.Listener backed by a *socket.Conn on the
@@ -124,7 +123,6 @@ func (cl *contextListener) Accept() (net.Conn, error) {
 type Conn struct {
 	local, remote *net.TCPAddr
 	c             *socket.Conn
-	ctx           context.Context
 }
 
 // Dial creates an IPv6 TCP net.Conn backed by a *socket.Conn with optional

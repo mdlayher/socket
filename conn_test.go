@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"net"
 	"os"
@@ -257,7 +256,7 @@ func testCloseReadWrite(t *testing.T, c1, c2 net.Conn) {
 			t.Errorf("unexpected cc1.CloseWrite error: %v", err)
 		}
 		_, err := cc1.Write(b)
-		if nerr, ok := err.(net.Error); !ok || nerr.Temporary() {
+		if nerr, ok := err.(net.Error); !ok || nerr.Timeout() {
 			t.Errorf("unexpected final cc1.Write error: %v", err)
 		}
 	}()
@@ -267,7 +266,7 @@ func testCloseReadWrite(t *testing.T, c1, c2 net.Conn) {
 
 		// Reading succeeds at first but should result in an EOF error after
 		// closing the read side of the net.Conn.
-		if err := chunkedCopy(ioutil.Discard, cc2); err != nil {
+		if err := chunkedCopy(io.Discard, cc2); err != nil {
 			t.Errorf("unexpected initial cc2.Read error: %v", err)
 		}
 		if err := cc2.CloseRead(); err != nil {
