@@ -700,8 +700,11 @@ func rwT[T any](c *Conn, rw rwContext[T]) (T, error) {
 		wg    sync.WaitGroup
 		doneC = make(chan struct{})
 
-		// Reports whether we have to disarm the deadline.
-		needDisarm atomic.Bool
+		// Atomic: reports whether we have to disarm the deadline.
+		//
+		// TODO(mdlayher): switch back to atomic.Bool when we drop support for
+		// Go 1.18.
+		needDisarm int64
 	)
 
 	// On cancel, clean up the watcher.
@@ -717,7 +720,7 @@ func rwT[T any](c *Conn, rw rwContext[T]) (T, error) {
 			return *new(T), err
 		}
 		setDeadline = true
-		needDisarm.Store(true)
+		atomic.AddInt64(&needDisarm, 1)
 	} else {
 		// The context does not have an explicit deadline. We have to watch for
 		// cancelation so we can propagate that signal to immediately unblock
@@ -733,7 +736,7 @@ func rwT[T any](c *Conn, rw rwContext[T]) (T, error) {
 			case <-rw.Context.Done():
 				// Cancel the operation. Make the caller disarm after poll
 				// returns.
-				needDisarm.Store(true)
+				atomic.AddInt64(&needDisarm, 1)
 				_ = deadline(time.Unix(0, 1))
 			case <-doneC:
 				// Nothing to do.
@@ -756,7 +759,7 @@ func rwT[T any](c *Conn, rw rwContext[T]) (T, error) {
 		return ready(err)
 	})
 
-	if needDisarm.Load() {
+	if atomic.LoadInt64(&needDisarm) > 0 {
 		_ = deadline(time.Time{})
 	}
 
