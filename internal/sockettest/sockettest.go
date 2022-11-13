@@ -91,9 +91,9 @@ func (l *Listener) Accept() (net.Conn, error) {
 	}
 
 	return &Conn{
+		Conn:   c,
 		local:  newTCPAddr(lsa),
 		remote: newTCPAddr(rsa),
-		c:      c,
 	}, nil
 }
 
@@ -125,9 +125,9 @@ func (cl *contextListener) Accept() (net.Conn, error) {
 	}
 
 	cc := &Conn{
+		Conn:   c,
 		local:  newTCPAddr(lsa),
 		remote: newTCPAddr(rsa),
-		c:      c,
 	}
 
 	return cc.Context(cl.ctx), nil
@@ -135,8 +135,8 @@ func (cl *contextListener) Accept() (net.Conn, error) {
 
 // A Conn is a net.Conn which can be extended with context support.
 type Conn struct {
+	Conn          *socket.Conn
 	local, remote *net.TCPAddr
-	c             *socket.Conn
 }
 
 // Dial creates an IPv4 or IPv6 TCP net.Conn backed by a *socket.Conn with
@@ -197,28 +197,28 @@ func Dial(ctx context.Context, addr net.Addr, cfg *socket.Config) (*Conn, error)
 	}
 
 	return &Conn{
+		Conn:   c,
 		local:  newTCPAddr(lsa),
 		remote: newTCPAddr(rsa),
-		c:      c,
 	}, nil
 }
 
-func (c *Conn) Close() error                       { return c.c.Close() }
-func (c *Conn) CloseRead() error                   { return c.c.CloseRead() }
-func (c *Conn) CloseWrite() error                  { return c.c.CloseWrite() }
+func (c *Conn) Close() error                       { return c.Conn.Close() }
+func (c *Conn) CloseRead() error                   { return c.Conn.CloseRead() }
+func (c *Conn) CloseWrite() error                  { return c.Conn.CloseWrite() }
 func (c *Conn) LocalAddr() net.Addr                { return c.local }
 func (c *Conn) RemoteAddr() net.Addr               { return c.remote }
-func (c *Conn) SetDeadline(t time.Time) error      { return c.c.SetDeadline(t) }
-func (c *Conn) SetReadDeadline(t time.Time) error  { return c.c.SetReadDeadline(t) }
-func (c *Conn) SetWriteDeadline(t time.Time) error { return c.c.SetWriteDeadline(t) }
+func (c *Conn) SetDeadline(t time.Time) error      { return c.Conn.SetDeadline(t) }
+func (c *Conn) SetReadDeadline(t time.Time) error  { return c.Conn.SetReadDeadline(t) }
+func (c *Conn) SetWriteDeadline(t time.Time) error { return c.Conn.SetWriteDeadline(t) }
 
 func (c *Conn) Read(b []byte) (int, error) {
-	n, err := c.c.Read(b)
+	n, err := c.Conn.Read(b)
 	return n, opError("read", err)
 }
 
 func (c *Conn) Write(b []byte) (int, error) {
-	n, err := c.c.Write(b)
+	n, err := c.Conn.Write(b)
 	return n, opError("write", err)
 }
 
@@ -236,12 +236,12 @@ func (c *Conn) Context(ctx context.Context) net.Conn {
 }
 
 func (cc *contextConn) Read(b []byte) (int, error) {
-	n, err := cc.c.ReadContext(cc.ctx, b)
+	n, err := cc.Conn.Conn.ReadContext(cc.ctx, b)
 	return n, opError("read", err)
 }
 
 func (cc *contextConn) Write(b []byte) (int, error) {
-	n, err := cc.c.WriteContext(cc.ctx, b)
+	n, err := cc.Conn.Conn.WriteContext(cc.ctx, b)
 	return n, opError("write", err)
 }
 
@@ -258,9 +258,18 @@ func opError(op string, err error) error {
 }
 
 func newTCPAddr(sa unix.Sockaddr) *net.TCPAddr {
-	sa6 := sa.(*unix.SockaddrInet6)
-	return &net.TCPAddr{
-		IP:   sa6.Addr[:],
-		Port: sa6.Port,
+	switch sa := sa.(type) {
+	case *unix.SockaddrInet4:
+		return &net.TCPAddr{
+			IP:   sa.Addr[:],
+			Port: sa.Port,
+		}
+	case *unix.SockaddrInet6:
+		return &net.TCPAddr{
+			IP:   sa.Addr[:],
+			Port: sa.Port,
+		}
 	}
+
+	panic("unknown address family")
 }

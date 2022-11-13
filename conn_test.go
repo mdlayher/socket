@@ -197,6 +197,82 @@ func TestListenerAcceptTCPContextDeadlineExceeded(t *testing.T) {
 	}
 }
 
+func TestListenerConnTCPContextCanceled(t *testing.T) {
+	t.Parallel()
+
+	l, err := sockettest.Listen(0, nil)
+	if err != nil {
+		t.Fatalf("failed to open listener: %v", err)
+	}
+	defer l.Close()
+
+	// Accept a single connection.
+	var eg errgroup.Group
+	eg.Go(func() error {
+		c, err := l.Accept()
+		if err != nil {
+			return fmt.Errorf("failed to accept: %v", err)
+		}
+		defer c.Close()
+
+		// Context is canceled during recvfrom.
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+
+		_, _, err = c.(*sockettest.Conn).Conn.Recvfrom(ctx, nil, 0)
+		return err
+	})
+
+	c, err := net.Dial(l.Addr().Network(), l.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to dial listener: %v", err)
+	}
+	defer c.Close()
+
+	// Client never sends data, so we wait until ctx cancel and errgroup return.
+	if diff := cmp.Diff(context.DeadlineExceeded, eg.Wait(), cmpopts.EquateErrors()); diff != "" {
+		t.Fatalf("unexpected recvfrom error (-want +got):\n%s", diff)
+	}
+}
+
+func TestListenerConnTCPContextDeadlineExceeded(t *testing.T) {
+	t.Parallel()
+
+	l, err := sockettest.Listen(0, nil)
+	if err != nil {
+		t.Fatalf("failed to open listener: %v", err)
+	}
+	defer l.Close()
+
+	// Accept a single connection.
+	var eg errgroup.Group
+	eg.Go(func() error {
+		c, err := l.Accept()
+		if err != nil {
+			return fmt.Errorf("failed to accept: %v", err)
+		}
+		defer c.Close()
+
+		// Context is canceled before recvfrom can take place.
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, _, err = c.(*sockettest.Conn).Conn.Recvfrom(ctx, nil, 0)
+		return err
+	})
+
+	c, err := net.Dial(l.Addr().Network(), l.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to dial listener: %v", err)
+	}
+	defer c.Close()
+
+	// Client never sends data, so we wait until ctx cancel and errgroup return.
+	if diff := cmp.Diff(context.Canceled, eg.Wait(), cmpopts.EquateErrors()); diff != "" {
+		t.Fatalf("unexpected recvfrom error (-want +got):\n%s", diff)
+	}
+}
+
 func TestFileConn(t *testing.T) {
 	t.Parallel()
 

@@ -23,6 +23,11 @@ var _ interface {
 
 // A Conn is a low-level network connection which integrates with Go's runtime
 // network poller to provide asynchronous I/O and deadline support.
+//
+// Many of a Conn's blocking methods support net.Conn deadlines as well as
+// cancelation via context. Note that passing a context with a deadline set will
+// override any of the previous deadlines set by calls to the SetDeadline family
+// of methods.
 type Conn struct {
 	// Indicates whether or not Conn.Close has been called. Must be accessed
 	// atomically. Atomics definitions must come first in the Conn struct.
@@ -388,19 +393,6 @@ func New(fd int, name string) (*Conn, error) {
 // deadline will override any previous deadlines set using SetDeadline or
 // SetReadDeadline. Upon return, the read deadline is cleared.
 func (c *Conn) Accept(ctx context.Context, flags int) (*Conn, unix.Sockaddr, error) {
-	// If the caller passed a context with a deadline set, use that deadline to
-	// wake up the runtime network poller on timeout.
-	var setDeadline bool
-	if d, ok := ctx.Deadline(); ok {
-		if err := c.SetReadDeadline(d); err != nil {
-			return nil, nil, err
-		}
-		setDeadline = true
-
-		// Disarm the deadline after return.
-		defer func() { _ = c.SetReadDeadline(time.Time{}) }()
-	}
-
 	type ret struct {
 		nfd int
 		sa  unix.Sockaddr
@@ -412,17 +404,7 @@ func (c *Conn) Accept(ctx context.Context, flags int) (*Conn, unix.Sockaddr, err
 		return ret{nfd, sa}, err
 	})
 	if err != nil {
-		if setDeadline && errors.Is(err, os.ErrDeadlineExceeded) {
-			// We set a deadline internally and it was reached, so unpack a
-			// plain context error. We wait for the context to be done to
-			// synchronize state externally. Otherwise we have noticed I/O
-			// timeout wakeups when we set a deadline but the context was not
-			// yet marked done.
-			<-ctx.Done()
-			return nil, nil, ctx.Err()
-		}
-
-		// internal/poll or user function error.
+		// internal/poll, context error, or user function error.
 		return nil, nil, err
 	}
 
@@ -458,19 +440,6 @@ func (c *Conn) Connect(ctx context.Context, sa unix.Sockaddr) (unix.Sockaddr, er
 	// listeners by calling Connect multiple times results in ECONNRESET for the
 	// first and nil error for subsequent calls. Do we need to memoize the
 	// error? Check what the stdlib behavior is.
-
-	// If the caller passed a context with a deadline set, use that deadline to
-	// wake up the runtime network poller on timeout.
-	var setDeadline bool
-	if d, ok := ctx.Deadline(); ok {
-		if err := c.SetWriteDeadline(d); err != nil {
-			return nil, err
-		}
-		setDeadline = true
-
-		// Disarm the deadline after return.
-		defer func() { _ = c.SetWriteDeadline(time.Time{}) }()
-	}
 
 	var (
 		// Track progress between invocations of the write closure. We don't
@@ -521,17 +490,7 @@ func (c *Conn) Connect(ctx context.Context, sa unix.Sockaddr) (unix.Sockaddr, er
 		return nil
 	})
 	if doErr != nil {
-		if setDeadline && errors.Is(doErr, os.ErrDeadlineExceeded) {
-			// We set a deadline internally and it was reached, so unpack a
-			// plain context error. We wait for the context to be done to
-			// synchronize state externally. Otherwise we have noticed I/O
-			// timeout wakeups when we set a deadline but the context was not
-			// yet marked done.
-			<-ctx.Done()
-			return nil, ctx.Err()
-		}
-
-		// internal/poll error.
+		// internal/poll or context error.
 		return nil, doErr
 	}
 
@@ -643,8 +602,6 @@ func (c *Conn) Shutdown(how int) error {
 
 // read wraps readT to execute a function and capture its error result. This is
 // a convenience wrapper for functions which don't return any extra values.
-//
-// It obeys context cancelation and the context must not be nil.
 func (c *Conn) read(ctx context.Context, op string, f func(fd int) error) error {
 	_, err := readT(c, ctx, op, func(fd int) (struct{}, error) {
 		return struct{}{}, f(fd)
@@ -654,8 +611,6 @@ func (c *Conn) read(ctx context.Context, op string, f func(fd int) error) error 
 
 // write executes f, a write function, against the associated file descriptor.
 // op is used to create an *os.SyscallError if the file descriptor is closed.
-//
-// It obeys context cancelation and the context must not be nil.
 func (c *Conn) write(ctx context.Context, op string, f func(fd int) error) error {
 	_, err := writeT(c, ctx, op, func(fd int) (struct{}, error) {
 		return struct{}{}, f(fd)
@@ -665,18 +620,24 @@ func (c *Conn) write(ctx context.Context, op string, f func(fd int) error) error
 
 // readT executes c.rc.Read for op using the input function, returning a newly
 // allocated result T.
-//
-// It obeys context cancelation and the context must not be nil.
 func readT[T any](c *Conn, ctx context.Context, op string, f func(fd int) (T, error)) (T, error) {
-	return rwT(c, ctx, read, op, f)
+	return rwT(c, rwContext[T]{
+		Context: ctx,
+		Type:    read,
+		Op:      op,
+		Do:      f,
+	})
 }
 
 // writeT executes c.rc.Write for op using the input function, returning a newly
 // allocated result T.
-//
-// It obeys context cancelation and the context must not be nil.
 func writeT[T any](c *Conn, ctx context.Context, op string, f func(fd int) (T, error)) (T, error) {
-	return rwT(c, ctx, write, op, f)
+	return rwT(c, rwContext[T]{
+		Context: ctx,
+		Type:    write,
+		Op:      op,
+		Do:      f,
+	})
 }
 
 // readWrite indicates if an operation intends to read or write.
@@ -688,21 +649,45 @@ const (
 	write readWrite = true
 )
 
-// rwT executes c.rc.Read or c.rc.Write (depending on the value of rw) for op
-// using the input function, returning a newly allocated result T.
+// An rwContext provides arguments to rwT.
+type rwContext[T any] struct {
+	// The caller's context passed for cancelation.
+	Context context.Context
+
+	// The type of an operation: read or write.
+	Type readWrite
+
+	// The name of the operation used in errors.
+	Op string
+
+	// The actual function to perform.
+	Do func(fd int) (T, error)
+}
+
+// rwT executes c.rc.Read or c.rc.Write (depending on the value of rw.Type) for
+// rw.Op using the input function, returning a newly allocated result T.
 //
-// It obeys context cancelation and the context must not be nil.
-func rwT[T any](c *Conn, ctx context.Context, rw readWrite, op string, f func(fd int) (T, error)) (T, error) {
+// It obeys context cancelation and the rw.Context must not be nil.
+func rwT[T any](c *Conn, rw rwContext[T]) (T, error) {
 	if atomic.LoadUint32(&c.closed) != 0 {
 		// If the file descriptor is already closed, do nothing.
-		return *new(T), os.NewSyscallError(op, unix.EBADF)
+		return *new(T), os.NewSyscallError(rw.Op, unix.EBADF)
 	}
 
-	var readWrite func(func(uintptr) bool) error
-	if rw == write {
-		readWrite = c.rc.Write
+	var (
+		// The read or write function used to access the runtime network poller.
+		poll func(func(uintptr) bool) error
+
+		// The read or write function used to set the matching deadline.
+		deadline func(time.Time) error
+	)
+
+	if rw.Type == write {
+		poll = c.rc.Write
+		deadline = c.SetWriteDeadline
 	} else {
-		readWrite = c.rc.Read
+		poll = c.rc.Read
+		deadline = c.SetReadDeadline
 	}
 
 	var (
@@ -710,23 +695,46 @@ func rwT[T any](c *Conn, ctx context.Context, rw readWrite, op string, f func(fd
 		err error
 	)
 
-	doErr := readWrite(func(fd uintptr) bool {
-		if err = ctx.Err(); err != nil {
+	// If the caller passed a context with a deadline set, use that deadline to
+	// wake up the runtime network poller on timeout.
+	var setDeadline bool
+	if d, ok := rw.Context.Deadline(); ok {
+		if err := deadline(d); err != nil {
+			return *new(T), err
+		}
+		setDeadline = true
+
+		// Disarm the deadline after return.
+		defer func() { _ = deadline(time.Time{}) }()
+	}
+
+	pollErr := poll(func(fd uintptr) bool {
+		if err = rw.Context.Err(); err != nil {
 			// Early exit due to context cancel.
 			return true
 		}
 
-		t, err = f(int(fd))
+		t, err = rw.Do(int(fd))
 		return ready(err)
 	})
-	if doErr != nil {
+	if pollErr != nil {
+		if setDeadline && errors.Is(pollErr, os.ErrDeadlineExceeded) {
+			// We set a deadline internally and it was reached, so unpack a
+			// plain context error. We wait for the context to be done to
+			// synchronize state externally. Otherwise we have noticed I/O
+			// timeout wakeups when we set a deadline but the context was not
+			// yet marked done.
+			<-rw.Context.Done()
+			return *new(T), os.NewSyscallError(rw.Op, rw.Context.Err())
+		}
+
 		// Error from syscall.RawConn methods. Conventionally the standard
 		// library does not wrap internal/poll errors in os.NewSyscallError.
-		return *new(T), doErr
+		return *new(T), pollErr
 	}
 
 	// Result from user function.
-	return t, os.NewSyscallError(op, err)
+	return t, os.NewSyscallError(rw.Op, err)
 }
 
 // control executes Conn.control for op using the input function.
@@ -791,9 +799,6 @@ func ready(err error) bool {
 		// Return false to let the poller wait for readiness. See the source code
 		// for internal/poll.FD.RawRead for more details.
 		return false
-	case context.Canceled, context.DeadlineExceeded:
-		// The caller canceled the operation.
-		return true
 	default:
 		// Ready regardless of whether there was an error or no error.
 		return true
