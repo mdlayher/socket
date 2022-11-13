@@ -2,6 +2,7 @@ package socket
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"sync/atomic"
@@ -389,10 +390,12 @@ func New(fd int, name string) (*Conn, error) {
 func (c *Conn) Accept(ctx context.Context, flags int) (*Conn, unix.Sockaddr, error) {
 	// If the caller passed a context with a deadline set, use that deadline to
 	// wake up the runtime network poller on timeout.
+	var setDeadline bool
 	if d, ok := ctx.Deadline(); ok {
 		if err := c.SetReadDeadline(d); err != nil {
 			return nil, nil, err
 		}
+		setDeadline = true
 
 		// Disarm the deadline after return.
 		defer func() { _ = c.SetReadDeadline(time.Time{}) }()
@@ -408,12 +411,18 @@ func (c *Conn) Accept(ctx context.Context, flags int) (*Conn, unix.Sockaddr, err
 		nfd, sa, err := accept(fd, flags|socketFlags)
 		return ret{nfd, sa}, err
 	})
-	if err := ctx.Err(); err != nil {
-		// Possibly woken up due to context cancelation.
-		return nil, nil, err
-	}
 	if err != nil {
-		// internal/poll or user call error.
+		if setDeadline && errors.Is(err, os.ErrDeadlineExceeded) {
+			// We set a deadline internally and it was reached, so unpack a
+			// plain context error. We wait for the context to be done to
+			// synchronize state externally. Otherwise we have noticed I/O
+			// timeout wakeups when we set a deadline but the context was not
+			// yet marked done.
+			<-ctx.Done()
+			return nil, nil, ctx.Err()
+		}
+
+		// internal/poll or user function error.
 		return nil, nil, err
 	}
 
@@ -452,10 +461,12 @@ func (c *Conn) Connect(ctx context.Context, sa unix.Sockaddr) (unix.Sockaddr, er
 
 	// If the caller passed a context with a deadline set, use that deadline to
 	// wake up the runtime network poller on timeout.
+	var setDeadline bool
 	if d, ok := ctx.Deadline(); ok {
 		if err := c.SetWriteDeadline(d); err != nil {
 			return nil, err
 		}
+		setDeadline = true
 
 		// Disarm the deadline after return.
 		defer func() { _ = c.SetWriteDeadline(time.Time{}) }()
@@ -509,11 +520,17 @@ func (c *Conn) Connect(ctx context.Context, sa unix.Sockaddr) (unix.Sockaddr, er
 		rsa = peer
 		return nil
 	})
-	if err := ctx.Err(); err != nil {
-		// Possibly woken up due to context cancelation.
-		return nil, err
-	}
 	if doErr != nil {
+		if setDeadline && errors.Is(err, os.ErrDeadlineExceeded) {
+			// We set a deadline internally and it was reached, so unpack a
+			// plain context error. We wait for the context to be done to
+			// synchronize state externally. Otherwise we have noticed I/O
+			// timeout wakeups when we set a deadline but the context was not
+			// yet marked done.
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+
 		// internal/poll error.
 		return nil, doErr
 	}
