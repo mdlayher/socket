@@ -22,6 +22,8 @@ import (
 )
 
 func TestConn(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name string
 		pipe nettest.MakePipe
@@ -75,6 +77,8 @@ func TestConn(t *testing.T) {
 }
 
 func TestDialTCPNoListener(t *testing.T) {
+	t.Parallel()
+
 	// See https://github.com/mdlayher/vsock/issues/47 and
 	// https://github.com/lxc/lxd/pull/9894 for context on this test.
 	//
@@ -93,6 +97,8 @@ func TestDialTCPNoListener(t *testing.T) {
 }
 
 func TestDialTCPContextCanceled(t *testing.T) {
+	t.Parallel()
+
 	// Context is canceled before any dialing can take place.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -108,6 +114,8 @@ func TestDialTCPContextCanceled(t *testing.T) {
 }
 
 func TestDialTCPContextDeadlineExceeded(t *testing.T) {
+	t.Parallel()
+
 	// Dialing is canceled after the deadline passes. We try to connect to the
 	// IPv6 example address since it appears to not return "connection refused".
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
@@ -124,6 +132,8 @@ func TestDialTCPContextDeadlineExceeded(t *testing.T) {
 }
 
 func TestListenerAcceptTCPContextCanceled(t *testing.T) {
+	t.Parallel()
+
 	l, err := sockettest.Listen(0, nil)
 	if err != nil {
 		t.Fatalf("failed to listen: %v", err)
@@ -141,6 +151,8 @@ func TestListenerAcceptTCPContextCanceled(t *testing.T) {
 }
 
 func TestListenerAcceptTCPContextDeadlineExceeded(t *testing.T) {
+	t.Parallel()
+
 	l, err := sockettest.Listen(0, nil)
 	if err != nil {
 		t.Fatalf("failed to listen: %v", err)
@@ -158,6 +170,8 @@ func TestListenerAcceptTCPContextDeadlineExceeded(t *testing.T) {
 }
 
 func TestFileConn(t *testing.T) {
+	t.Parallel()
+
 	// Use raw system calls to set up the socket since we assume anything being
 	// passed into a FileConn is set up by another system, such as systemd's
 	// socket activation.

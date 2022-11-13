@@ -21,6 +21,8 @@ import (
 )
 
 func TestLinuxConnBuffers(t *testing.T) {
+	t.Parallel()
+
 	// This test isn't necessarily Linux-specific but it's easiest to verify on
 	// Linux because we can rely on the kernel's documented buffer size
 	// manipulation behavior.
@@ -71,6 +73,8 @@ func TestLinuxConnBuffers(t *testing.T) {
 }
 
 func TestLinuxNetworkNamespaces(t *testing.T) {
+	t.Parallel()
+
 	l, err := sockettest.Listen(0, nil)
 	if err != nil {
 		t.Fatalf("failed to create listener: %v", err)
@@ -130,6 +134,8 @@ func TestLinuxNetworkNamespaces(t *testing.T) {
 }
 
 func TestLinuxDialVsockNoListener(t *testing.T) {
+	t.Parallel()
+
 	// See https://github.com/mdlayher/vsock/issues/47 and
 	// https://github.com/lxc/lxd/pull/9894 for context on this test.
 	c, err := socket.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0, "vsock", nil)
