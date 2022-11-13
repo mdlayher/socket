@@ -521,7 +521,7 @@ func (c *Conn) Connect(ctx context.Context, sa unix.Sockaddr) (unix.Sockaddr, er
 		return nil
 	})
 	if doErr != nil {
-		if setDeadline && errors.Is(err, os.ErrDeadlineExceeded) {
+		if setDeadline && errors.Is(doErr, os.ErrDeadlineExceeded) {
 			// We set a deadline internally and it was reached, so unpack a
 			// plain context error. We wait for the context to be done to
 			// synchronize state externally. Otherwise we have noticed I/O
