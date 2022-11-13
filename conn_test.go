@@ -126,7 +126,7 @@ func TestDialTCPContextDeadlineExceeded(t *testing.T) {
 		IP:   net.ParseIP("2008:db8::1"),
 		Port: math.MaxUint16,
 	}, nil)
-	if errors.Is(err, unix.ENETUNREACH) {
+	if errors.Is(err, unix.ENETUNREACH) || errors.Is(err, unix.EHOSTUNREACH) {
 		t.Skipf("skipping, no outbound IPv6 connectivity: %v", err)
 	}
 
