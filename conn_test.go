@@ -219,7 +219,8 @@ func TestListenerConnTCPContextCanceled(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 		defer cancel()
 
-		_, _, err = c.(*sockettest.Conn).Conn.Recvfrom(ctx, nil, 0)
+		b := make([]byte, 1024)
+		_, _, err = c.(*sockettest.Conn).Conn.Recvfrom(ctx, b, 0)
 		return err
 	})
 
@@ -257,7 +258,8 @@ func TestListenerConnTCPContextDeadlineExceeded(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		_, _, err = c.(*sockettest.Conn).Conn.Recvfrom(ctx, nil, 0)
+		b := make([]byte, 1024)
+		_, _, err = c.(*sockettest.Conn).Conn.Recvfrom(ctx, b, 0)
 		return err
 	})
 
