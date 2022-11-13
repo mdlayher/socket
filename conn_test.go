@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/netip"
 	"os"
 	"runtime"
 	"sync"
@@ -119,21 +120,42 @@ func TestDialTCPContextCanceled(t *testing.T) {
 func TestDialTCPContextDeadlineExceeded(t *testing.T) {
 	t.Parallel()
 
-	// Dialing is canceled after the deadline passes. We try to connect to the
-	// IPv6 example address since it appears to not return "connection refused".
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-
-	_, err := sockettest.Dial(ctx, &net.TCPAddr{
-		IP:   net.ParseIP("2008:db8::1"),
-		Port: math.MaxUint16,
-	}, nil)
-	if errors.Is(err, unix.ENETUNREACH) || errors.Is(err, unix.EHOSTUNREACH) {
-		t.Skipf("skipping, no outbound IPv6 connectivity: %v", err)
+	tests := []struct {
+		name string
+		ip   netip.Addr
+	}{
+		// It appears we can dial addresses in the documentation range and
+		// connect will hang, which is perfect for this test case.
+		{
+			name: "IPv4",
+			ip:   netip.MustParseAddr("192.0.2.1"),
+		},
+		{
+			name: "IPv6",
+			ip:   netip.MustParseAddr("2001:db8::1"),
+		},
 	}
 
-	if diff := cmp.Diff(context.DeadlineExceeded, err, cmpopts.EquateErrors()); diff != "" {
-		t.Fatalf("unexpected connect error (-want +got):\n%s", diff)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Dialing is canceled after the deadline passes.
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+			defer cancel()
+
+			_, err := sockettest.Dial(ctx, &net.TCPAddr{
+				IP:   tt.ip.AsSlice(),
+				Port: math.MaxUint16,
+			}, nil)
+			if errors.Is(err, unix.ENETUNREACH) || errors.Is(err, unix.EHOSTUNREACH) {
+				t.Skipf("skipping, no outbound %s connectivity: %v", tt.name, err)
+			}
+
+			if diff := cmp.Diff(context.DeadlineExceeded, err, cmpopts.EquateErrors()); diff != "" {
+				t.Fatalf("unexpected connect error (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
 

@@ -139,27 +139,51 @@ type Conn struct {
 	c             *socket.Conn
 }
 
-// Dial creates an IPv6 TCP net.Conn backed by a *socket.Conn with optional
-// configuration.
+// Dial creates an IPv4 or IPv6 TCP net.Conn backed by a *socket.Conn with
+// optional configuration.
 func Dial(ctx context.Context, addr net.Addr, cfg *socket.Config) (*Conn, error) {
 	ta, ok := addr.(*net.TCPAddr)
 	if !ok {
 		return nil, fmt.Errorf("expected *net.TCPAddr, but got: %T", addr)
 	}
 
-	c, err := socket.Socket(unix.AF_INET6, unix.SOCK_STREAM, 0, "tcpv6-client", cfg)
+	var (
+		family int
+		name   string
+		sa     unix.Sockaddr
+	)
+
+	if ta.IP.To16() != nil && ta.IP.To4() == nil {
+		// IPv6.
+		family = unix.AF_INET6
+		name = "tcpv6-client"
+
+		var sa6 unix.SockaddrInet6
+		copy(sa6.Addr[:], ta.IP)
+		sa6.Port = ta.Port
+
+		sa = &sa6
+	} else {
+		// IPv4.
+		family = unix.AF_INET
+		name = "tcpv4-client"
+
+		var sa4 unix.SockaddrInet4
+		copy(sa4.Addr[:], ta.IP.To4())
+		sa4.Port = ta.Port
+
+		sa = &sa4
+	}
+
+	c, err := socket.Socket(family, unix.SOCK_STREAM, 0, name, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open socket: %v", err)
 	}
 
-	var sa unix.SockaddrInet6
-	copy(sa.Addr[:], ta.IP)
-	sa.Port = ta.Port
-
 	// Be sure to close the Conn if any of the system calls fail before we
 	// return the Conn to the caller.
 
-	rsa, err := c.Connect(ctx, &sa)
+	rsa, err := c.Connect(ctx, sa)
 	if err != nil {
 		_ = c.Close()
 		// Don't wrap, we want the raw error for tests.
