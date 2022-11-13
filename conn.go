@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -691,22 +692,59 @@ func rwT[T any](c *Conn, rw rwContext[T]) (T, error) {
 	}
 
 	var (
-		t   T
-		err error
+		// Whether or not the context carried a deadline we are actively using
+		// for cancelation.
+		setDeadline bool
+
+		// Signals for the cancelation watcher goroutine.
+		wg    sync.WaitGroup
+		doneC = make(chan struct{})
+
+		// Reports whether we have to disarm the deadline.
+		needDisarm atomic.Bool
 	)
 
-	// If the caller passed a context with a deadline set, use that deadline to
-	// wake up the runtime network poller on timeout.
-	var setDeadline bool
+	// On cancel, clean up the watcher.
+	defer func() {
+		close(doneC)
+		wg.Wait()
+	}()
+
 	if d, ok := rw.Context.Deadline(); ok {
+		// The context has an explicit deadline. We will use it for cancelation
+		// but disarm it after poll for the next call.
 		if err := deadline(d); err != nil {
 			return *new(T), err
 		}
 		setDeadline = true
+		needDisarm.Store(true)
+	} else {
+		// The context does not have an explicit deadline. We have to watch for
+		// cancelation so we can propagate that signal to immediately unblock
+		// the runtime network poller.
+		//
+		// TODO(mdlayher): is it possible to detect a background context vs a
+		// context with possible future cancel?
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 
-		// Disarm the deadline after return.
-		defer func() { _ = deadline(time.Time{}) }()
+			select {
+			case <-rw.Context.Done():
+				// Cancel the operation. Make the caller disarm after poll
+				// returns.
+				needDisarm.Store(true)
+				_ = deadline(time.Unix(0, 1))
+			case <-doneC:
+				// Nothing to do.
+			}
+		}()
 	}
+
+	var (
+		t   T
+		err error
+	)
 
 	pollErr := poll(func(fd uintptr) bool {
 		if err = rw.Context.Err(); err != nil {
@@ -717,11 +755,18 @@ func rwT[T any](c *Conn, rw rwContext[T]) (T, error) {
 		t, err = rw.Do(int(fd))
 		return ready(err)
 	})
+
+	if needDisarm.Load() {
+		_ = deadline(time.Time{})
+	}
+
 	if pollErr != nil {
-		if setDeadline && errors.Is(pollErr, os.ErrDeadlineExceeded) {
-			// We set a deadline internally and it was reached, so unpack a
-			// plain context error. We wait for the context to be done to
-			// synchronize state externally. Otherwise we have noticed I/O
+		if rw.Context.Err() != nil || (setDeadline && errors.Is(pollErr, os.ErrDeadlineExceeded)) {
+			// The caller canceled the operation or we set a deadline internally
+			// and it was reached.
+			//
+			// Unpack a plain context error. We wait for the context to be done
+			// to synchronize state externally. Otherwise we have noticed I/O
 			// timeout wakeups when we set a deadline but the context was not
 			// yet marked done.
 			<-rw.Context.Done()

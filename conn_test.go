@@ -100,7 +100,7 @@ func TestDialTCPNoListener(t *testing.T) {
 	}
 }
 
-func TestDialTCPContextCanceled(t *testing.T) {
+func TestDialTCPContextCanceledBefore(t *testing.T) {
 	t.Parallel()
 
 	// Context is canceled before any dialing can take place.
@@ -117,26 +117,58 @@ func TestDialTCPContextCanceled(t *testing.T) {
 	}
 }
 
+var ipTests = []struct {
+	name string
+	ip   netip.Addr
+}{
+	// It appears we can dial addresses in the documentation range and
+	// connect will hang, which is perfect for this test case.
+	{
+		name: "IPv4",
+		ip:   netip.MustParseAddr("192.0.2.1"),
+	},
+	{
+		name: "IPv6",
+		ip:   netip.MustParseAddr("2001:db8::1"),
+	},
+}
+
+func TestDialTCPContextCanceledDuring(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range ipTests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Context is canceled during a blocking operation but without an
+			// explicit deadline passed on the context.
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			go func() {
+				time.Sleep(1 * time.Second)
+				cancel()
+			}()
+
+			_, err := sockettest.Dial(ctx, &net.TCPAddr{
+				IP:   tt.ip.AsSlice(),
+				Port: math.MaxUint16,
+			}, nil)
+			if errors.Is(err, unix.ENETUNREACH) || errors.Is(err, unix.EHOSTUNREACH) {
+				t.Skipf("skipping, no outbound %s connectivity: %v", tt.name, err)
+			}
+
+			if diff := cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()); diff != "" {
+				t.Fatalf("unexpected connect error (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestDialTCPContextDeadlineExceeded(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name string
-		ip   netip.Addr
-	}{
-		// It appears we can dial addresses in the documentation range and
-		// connect will hang, which is perfect for this test case.
-		{
-			name: "IPv4",
-			ip:   netip.MustParseAddr("192.0.2.1"),
-		},
-		{
-			name: "IPv6",
-			ip:   netip.MustParseAddr("2001:db8::1"),
-		},
-	}
-
-	for _, tt := range tests {
+	for _, tt := range ipTests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -159,7 +191,7 @@ func TestDialTCPContextDeadlineExceeded(t *testing.T) {
 	}
 }
 
-func TestListenerAcceptTCPContextCanceled(t *testing.T) {
+func TestListenerAcceptTCPContextCanceledBefore(t *testing.T) {
 	t.Parallel()
 
 	l, err := sockettest.Listen(0, nil)
@@ -171,6 +203,31 @@ func TestListenerAcceptTCPContextCanceled(t *testing.T) {
 	// Context is canceled before accept can take place.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+
+	_, err = l.Context(ctx).Accept()
+	if diff := cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()); diff != "" {
+		t.Fatalf("unexpected accept error (-want +got):\n%s", diff)
+	}
+}
+
+func TestListenerAcceptTCPContextCanceledDuring(t *testing.T) {
+	t.Parallel()
+
+	l, err := sockettest.Listen(0, nil)
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer l.Close()
+
+	// Context is canceled during a blocking operation but without an
+	// explicit deadline passed on the context.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		time.Sleep(1 * time.Second)
+		cancel()
+	}()
 
 	_, err = l.Context(ctx).Accept()
 	if diff := cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()); diff != "" {
