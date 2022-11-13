@@ -18,6 +18,12 @@ import (
 type Listener struct {
 	addr *net.TCPAddr
 	c    *socket.Conn
+	ctx  context.Context
+}
+
+func (l *Listener) Context(ctx context.Context) *Listener {
+	l.ctx = ctx
+	return l
 }
 
 // Listen creates an IPv6 TCP net.Listener backed by a *socket.Conn on the
@@ -77,66 +83,47 @@ func FileListener(f *os.File) (*Listener, error) {
 func (l *Listener) Addr() net.Addr { return l.addr }
 func (l *Listener) Close() error   { return l.c.Close() }
 func (l *Listener) Accept() (net.Conn, error) {
+	ctx := context.Background()
+	if l.ctx != nil {
+		ctx = l.ctx
+	}
+
 	// SOCK_CLOEXEC and SOCK_NONBLOCK set automatically by Accept when possible.
-	c, rsa, err := l.c.Accept(context.Background(), 0)
+	conn, rsa, err := l.c.Accept(ctx, 0)
 	if err != nil {
 		return nil, err
 	}
 
-	lsa, err := c.Getsockname()
-	if err != nil {
-		// Don't leak the Conn if the system call fails.
-		_ = c.Close()
-		return nil, err
-	}
-
-	return &Conn{
-		Conn:   c,
-		local:  newTCPAddr(lsa),
-		remote: newTCPAddr(rsa),
-	}, nil
-}
-
-// A contextListener passes its context into Accept and accepted Conns for
-// cancelation.
-type contextListener struct {
-	ctx context.Context
-	*Listener
-}
-
-func (l *Listener) Context(ctx context.Context) net.Listener {
-	return &contextListener{
-		ctx:      ctx,
-		Listener: l,
-	}
-}
-
-func (cl *contextListener) Accept() (net.Conn, error) {
-	c, rsa, err := cl.c.Accept(cl.ctx, 0)
-	if err != nil {
-		return nil, err
-	}
-
-	lsa, err := c.Getsockname()
+	lsa, err := conn.Getsockname()
 	if err != nil {
 		// Don't leak the Conn if the system call fails.
-		_ = c.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 
-	cc := &Conn{
-		Conn:   c,
+	c := &Conn{
+		Conn:   conn,
 		local:  newTCPAddr(lsa),
 		remote: newTCPAddr(rsa),
 	}
 
-	return cc.Context(cl.ctx), nil
+	if l.ctx != nil {
+		return c.Context(l.ctx), nil
+	}
+
+	return c, nil
 }
 
 // A Conn is a net.Conn which can be extended with context support.
 type Conn struct {
 	Conn          *socket.Conn
 	local, remote *net.TCPAddr
+	ctx           context.Context
+}
+
+func (c *Conn) Context(ctx context.Context) *Conn {
+	c.ctx = ctx
+	return c
 }
 
 // Dial creates an IPv4 or IPv6 TCP net.Conn backed by a *socket.Conn with
@@ -213,35 +200,32 @@ func (c *Conn) SetReadDeadline(t time.Time) error  { return c.Conn.SetReadDeadli
 func (c *Conn) SetWriteDeadline(t time.Time) error { return c.Conn.SetWriteDeadline(t) }
 
 func (c *Conn) Read(b []byte) (int, error) {
-	n, err := c.Conn.Read(b)
+	var (
+		n   int
+		err error
+	)
+
+	if c.ctx != nil {
+		n, err = c.Conn.ReadContext(c.ctx, b)
+	} else {
+		n, err = c.Conn.Read(b)
+	}
+
 	return n, opError("read", err)
 }
 
 func (c *Conn) Write(b []byte) (int, error) {
-	n, err := c.Conn.Write(b)
-	return n, opError("write", err)
-}
+	var (
+		n   int
+		err error
+	)
 
-// A contextConn passes its context into a Conn for cancelation.
-type contextConn struct {
-	ctx context.Context
-	*Conn
-}
-
-func (c *Conn) Context(ctx context.Context) net.Conn {
-	return &contextConn{
-		ctx:  ctx,
-		Conn: c,
+	if c.ctx != nil {
+		n, err = c.Conn.WriteContext(c.ctx, b)
+	} else {
+		n, err = c.Conn.Write(b)
 	}
-}
 
-func (cc *contextConn) Read(b []byte) (int, error) {
-	n, err := cc.Conn.Conn.ReadContext(cc.ctx, b)
-	return n, opError("read", err)
-}
-
-func (cc *contextConn) Write(b []byte) (int, error) {
-	n, err := cc.Conn.Conn.WriteContext(cc.ctx, b)
 	return n, opError("write", err)
 }
 

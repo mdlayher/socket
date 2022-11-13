@@ -69,6 +69,7 @@ func TestConn(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -137,6 +138,7 @@ func TestDialTCPContextCanceledDuring(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range ipTests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -169,6 +171,7 @@ func TestDialTCPContextDeadlineExceeded(t *testing.T) {
 	t.Parallel()
 
 	for _, tt := range ipTests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
