@@ -675,6 +675,11 @@ func rwT[T any](c *Conn, rw rwContext[T]) (T, error) {
 		return *new(T), os.NewSyscallError(rw.Op, unix.EBADF)
 	}
 
+	if err := rw.Context.Err(); err != nil {
+		// Early exit due to context cancel.
+		return *new(T), os.NewSyscallError(rw.Op, err)
+	}
+
 	var (
 		// The read or write function used to access the runtime network poller.
 		poll func(func(uintptr) bool) error
@@ -750,11 +755,6 @@ func rwT[T any](c *Conn, rw rwContext[T]) (T, error) {
 	)
 
 	pollErr := poll(func(fd uintptr) bool {
-		if err = rw.Context.Err(); err != nil {
-			// Early exit due to context cancel.
-			return true
-		}
-
 		t, err = rw.Do(int(fd))
 		return ready(err)
 	})
