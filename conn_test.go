@@ -3,6 +3,7 @@ package socket_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -125,6 +126,9 @@ func TestDialTCPContextDeadlineExceeded(t *testing.T) {
 		IP:   net.ParseIP("2008:db8::1"),
 		Port: math.MaxUint16,
 	}, nil)
+	if errors.Is(err, unix.ENETUNREACH) {
+		t.Skipf("skipping, no outbound IPv6 connectivity: %v", err)
+	}
 
 	if diff := cmp.Diff(context.DeadlineExceeded, err, cmpopts.EquateErrors()); diff != "" {
 		t.Fatalf("unexpected connect error (-want +got):\n%s", diff)
