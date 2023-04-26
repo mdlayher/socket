@@ -160,3 +160,18 @@ func TestLinuxDialVsockNoListener(t *testing.T) {
 		t.Fatalf("unexpected connect error (-want +got):\n%s", diff)
 	}
 }
+
+func TestLinuxOpenPIDFD(t *testing.T) {
+	// Verify we can use regular files with socket by properly handling
+	// ENOTSOCK, as is the case with pidfds.
+	fd, err := unix.PidfdOpen(1, unix.PIDFD_NONBLOCK)
+	if err != nil {
+		t.Fatalf("failed to open pidfd for init: %v", err)
+	}
+
+	c, err := socket.New(fd, "pidfd")
+	if err != nil {
+		t.Fatalf("failed to open Conn for pidfd: %v", err)
+	}
+	_ = c.Close()
+}

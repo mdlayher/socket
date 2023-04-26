@@ -38,18 +38,25 @@ type Conn struct {
 	// descriptors such as those created by accept(2).
 	name string
 
-	// Whether this is a streaming descriptor, as opposed to a
-	// packet-based descriptor like a UDP socket.
-	isStream bool
-
-	// Whether a zero byte read indicates EOF. This is false for a
-	// message based socket connection.
-	zeroReadIsEOF bool
+	// facts contains information we have determined about Conn to trigger
+	// alternate behavior in certain functions.
+	facts facts
 
 	// Provides access to the underlying file registered with the runtime
 	// network poller, and arbitrary raw I/O calls.
 	fd *os.File
 	rc syscall.RawConn
+}
+
+// facts contains facts about a Conn.
+type facts struct {
+	// isStream reports whether this is a streaming descriptor, as opposed to a
+	// packet-based descriptor like a UDP socket.
+	isStream bool
+
+	// zeroReadIsEOF reports Whether a zero byte read indicates EOF. This is
+	// false for a message based socket connection.
+	zeroReadIsEOF bool
 }
 
 // A Config contains options for a Conn.
@@ -109,14 +116,14 @@ func (c *Conn) Read(b []byte) (int, error) { return c.fd.Read(b) }
 // ReadContext reads from the underlying file descriptor with added support for
 // context cancelation.
 func (c *Conn) ReadContext(ctx context.Context, b []byte) (int, error) {
-	if c.isStream && len(b) > maxRW {
+	if c.facts.isStream && len(b) > maxRW {
 		b = b[:maxRW]
 	}
 
 	n, err := readT(c, ctx, "read", func(fd int) (int, error) {
 		return unix.Read(fd, b)
 	})
-	if n == 0 && err == nil && c.zeroReadIsEOF {
+	if n == 0 && err == nil && c.facts.zeroReadIsEOF {
 		return 0, io.EOF
 	}
 
@@ -136,7 +143,7 @@ func (c *Conn) WriteContext(ctx context.Context, b []byte) (int, error) {
 
 	doErr := c.write(ctx, "write", func(fd int) error {
 		max := len(b)
-		if c.isStream && max-nn > maxRW {
+		if c.facts.isStream && max-nn > maxRW {
 			max = nn + maxRW
 		}
 
@@ -367,13 +374,25 @@ func New(fd int, name string) (*Conn, error) {
 		rc:   rc,
 	}
 
+	// Probe the file descriptor for socket settings.
 	sotype, err := c.GetsockoptInt(unix.SOL_SOCKET, unix.SO_TYPE)
-	if err != nil {
+	switch {
+	case err == nil:
+		// File is a socket, check its properties.
+		c.facts = facts{
+			isStream:      sotype == unix.SOCK_STREAM,
+			zeroReadIsEOF: sotype != unix.SOCK_DGRAM && sotype != unix.SOCK_RAW,
+		}
+	case errors.Is(err, unix.ENOTSOCK):
+		// File is not a socket, treat it as a regular file.
+		c.facts = facts{
+			isStream:      true,
+			zeroReadIsEOF: true,
+		}
+	default:
 		return nil, err
 	}
 
-	c.isStream = sotype == unix.SOCK_STREAM
-	c.zeroReadIsEOF = sotype != unix.SOCK_DGRAM && sotype != unix.SOCK_RAW
 	return c, nil
 }
 
@@ -544,7 +563,7 @@ func (c *Conn) Recvmsg(ctx context.Context, p, oob []byte, flags int) (int, int,
 		n, oobn, recvflags, from, err := unix.Recvmsg(fd, p, oob, flags)
 		return ret{n, oobn, recvflags, from}, err
 	})
-	if r.n == 0 && err == nil && c.zeroReadIsEOF {
+	if r.n == 0 && err == nil && c.facts.zeroReadIsEOF {
 		return 0, 0, 0, nil, io.EOF
 	}
 
@@ -562,7 +581,7 @@ func (c *Conn) Recvfrom(ctx context.Context, p []byte, flags int) (int, unix.Soc
 		n, addr, err := unix.Recvfrom(fd, p, flags)
 		return ret{n, addr}, err
 	})
-	if out.n == 0 && err == nil && c.zeroReadIsEOF {
+	if out.n == 0 && err == nil && c.facts.zeroReadIsEOF {
 		return 0, nil, io.EOF
 	}
 
