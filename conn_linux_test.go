@@ -175,3 +175,40 @@ func TestLinuxOpenPIDFD(t *testing.T) {
 	}
 	_ = c.Close()
 }
+
+func TestLinuxBindToDevice(t *testing.T) {
+	t.Parallel()
+
+	c, err := socket.Socket(unix.AF_INET, unix.SOCK_STREAM, 0, "tcpv4", nil)
+	if err != nil {
+		t.Fatalf("failed to open socket: %v", err)
+	}
+	defer c.Close()
+
+	// Assumes the loopback interface is always the first device on Linux
+	// machines.
+	const (
+		name  = "lo"
+		index = 1
+	)
+
+	if err := c.SetsockoptString(unix.SOL_SOCKET, unix.SO_BINDTODEVICE, name); err != nil {
+		t.Fatalf("failed to bind to device: %v", err)
+	}
+
+	gotName, err := c.GetsockoptString(unix.SOL_SOCKET, unix.SO_BINDTODEVICE)
+	if err != nil {
+		t.Fatalf("failed to get bound interface name: %v", err)
+	}
+	if diff := cmp.Diff(name, gotName); diff != "" {
+		t.Fatalf("unexpected interface name (-want +got):\n%s", diff)
+	}
+
+	gotIndex, err := c.GetsockoptInt(unix.SOL_SOCKET, unix.SO_BINDTOIFINDEX)
+	if err != nil {
+		t.Fatalf("failed to get bound interface index: %v", err)
+	}
+	if diff := cmp.Diff(index, gotIndex); diff != "" {
+		t.Fatalf("unexpected interface index (-want +got):\n%s", diff)
+	}
+}

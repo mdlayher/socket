@@ -545,6 +545,13 @@ func (c *Conn) GetsockoptInt(level, opt int) (int, error) {
 	})
 }
 
+// GetsockoptString wraps getsockopt(2) for string values.
+func (c *Conn) GetsockoptString(level, opt int) (string, error) {
+	return controlT(c, context.Background(), "getsockopt", func(fd int) (string, error) {
+		return unix.GetsockoptString(fd, level, opt)
+	})
+}
+
 // Listen wraps listen(2).
 func (c *Conn) Listen(n int) error {
 	return c.control(context.Background(), "listen", func(fd int) error {
@@ -606,6 +613,13 @@ func (c *Conn) Sendto(ctx context.Context, p []byte, flags int, to unix.Sockaddr
 func (c *Conn) SetsockoptInt(level, opt, value int) error {
 	return c.control(context.Background(), "setsockopt", func(fd int) error {
 		return unix.SetsockoptInt(fd, level, opt, value)
+	})
+}
+
+// SetsockoptString wraps setsockopt(2) for string values.
+func (c *Conn) SetsockoptString(level, opt int, value string) error {
+	return c.control(context.Background(), "setsockopt", func(fd int) error {
+		return unix.SetsockoptString(fd, level, opt, value)
 	})
 }
 
