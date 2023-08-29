@@ -538,6 +538,13 @@ func (c *Conn) Getpeername() (unix.Sockaddr, error) {
 	return controlT(c, context.Background(), "getpeername", unix.Getpeername)
 }
 
+// GetsockoptICMPv6Filter wraps getsockopt(2) for *unix.ICMPv6Filter values.
+func (c *Conn) GetsockoptICMPv6Filter(level, opt int) (*unix.ICMPv6Filter, error) {
+	return controlT(c, context.Background(), "getsockopt", func(fd int) (*unix.ICMPv6Filter, error) {
+		return unix.GetsockoptICMPv6Filter(fd, level, opt)
+	})
+}
+
 // GetsockoptInt wraps getsockopt(2) for integer values.
 func (c *Conn) GetsockoptInt(level, opt int) (int, error) {
 	return controlT(c, context.Background(), "getsockopt", func(fd int) (int, error) {
@@ -606,6 +613,13 @@ func (c *Conn) Sendmsg(ctx context.Context, p, oob []byte, to unix.Sockaddr, fla
 func (c *Conn) Sendto(ctx context.Context, p []byte, flags int, to unix.Sockaddr) error {
 	return c.write(ctx, "sendto", func(fd int) error {
 		return unix.Sendto(fd, p, flags, to)
+	})
+}
+
+// SetsockoptICMPv6Filter wraps setsockopt(2) for *unix.ICMPv6Filter values.
+func (c *Conn) SetsockoptICMPv6Filter(level, opt int, filter *unix.ICMPv6Filter) error {
+	return c.control(context.Background(), "setsockopt", func(fd int) error {
+		return unix.SetsockoptICMPv6Filter(fd, level, opt, filter)
 	})
 }
 
