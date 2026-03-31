@@ -464,7 +464,7 @@ func (c *Conn) Connect(ctx context.Context, sa unix.Sockaddr) (unix.Sockaddr, er
 		// have an explicit WaitWrite call like internal/poll does, so we have
 		// to wait until the runtime calls the closure again to indicate we can
 		// write.
-		progress uint32
+		progress atomic.Uint32
 
 		// Capture closure sockaddr and error.
 		rsa unix.Sockaddr
@@ -472,7 +472,7 @@ func (c *Conn) Connect(ctx context.Context, sa unix.Sockaddr) (unix.Sockaddr, er
 	)
 
 	doErr := c.write(ctx, op, func(fd int) error {
-		if atomic.AddUint32(&progress, 1) == 1 {
+		if progress.Add(1) == 1 {
 			// First call: initiate connect.
 			return unix.Connect(fd, sa)
 		}
@@ -771,9 +771,7 @@ func rwT[T any](c *Conn, rw rwContext[T]) (T, error) {
 		//
 		// TODO(mdlayher): is it possible to detect a background context vs a
 		// context with possible future cancel?
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 
 			select {
 			case <-rw.Context.Done():
@@ -784,7 +782,7 @@ func rwT[T any](c *Conn, rw rwContext[T]) (T, error) {
 			case <-doneC:
 				// Nothing to do.
 			}
-		}()
+		})
 	}
 
 	var (
