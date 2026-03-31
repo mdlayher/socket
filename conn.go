@@ -605,6 +605,13 @@ func (c *Conn) Sendmsg(ctx context.Context, p, oob []byte, to unix.Sockaddr, fla
 	})
 }
 
+// SendmsgBuffers wraps sendmsg(2) with scatter-gather I/O support.
+func (c *Conn) SendmsgBuffers(ctx context.Context, buffers [][]byte, oob []byte, to unix.Sockaddr, flags int) (int, error) {
+	return writeT(c, ctx, "sendmsgbuffers", func(fd int) (int, error) {
+		return unix.SendmsgBuffers(fd, buffers, oob, to, flags)
+	})
+}
+
 // Sendto wraps sendto(2).
 func (c *Conn) Sendto(ctx context.Context, p []byte, flags int, to unix.Sockaddr) error {
 	return c.write(ctx, "sendto", func(fd int) error {
