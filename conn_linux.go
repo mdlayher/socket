@@ -4,6 +4,7 @@ package socket
 
 import (
 	"context"
+	"io"
 	"os"
 	"unsafe"
 
@@ -114,4 +115,22 @@ func (c *Conn) Waitid(idType int, info *unix.Siginfo, options int, rusage *unix.
 	return c.read(context.Background(), "waitid", func(fd int) error {
 		return unix.Waitid(idType, fd, info, options, rusage)
 	})
+}
+
+// Recvmmsg wraps receivemmsg(2).
+func (c *Conn) Recvmmsg(ctx context.Context, p, oob [][]byte, flags int) (int, []int, []int, []int, error) {
+	type ret struct {
+		n                   int
+		ns, oobn, recvflags []int
+	}
+
+	r, err := readT(ctx, c, "recvmmsg", func(fd int) (ret, error) {
+		n, ns, oobn, recvflags, err := recvmmsg(fd, p, oob, flags)
+		return ret{n, ns, oobn, recvflags}, err
+	})
+	if r.n == 0 && err == nil && c.facts.zeroReadIsEOF {
+		return 0, []int{}, []int{}, []int{}, io.EOF
+	}
+
+	return r.n, r.ns, r.oobn, r.recvflags, err
 }

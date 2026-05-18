@@ -11,6 +11,7 @@ import (
 	"os"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/mdlayher/socket"
@@ -209,5 +210,81 @@ func TestLinuxBindToDevice(t *testing.T) {
 	}
 	if diff := cmp.Diff(index, gotIndex); diff != "" {
 		t.Fatalf("unexpected interface index (-want +got):\n%s", diff)
+	}
+}
+
+func TestRecvmmsgMultipleMessages(t *testing.T) {
+	t.Parallel()
+
+	// Verify that recvmmsg receives multiple datagrams in a single call.
+	c, err := socket.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0, "udp4", nil)
+	if err != nil {
+		t.Fatalf("failed to open socket: %v", err)
+	}
+	defer c.Close()
+
+	if err := c.Bind(&unix.SockaddrInet4{Port: 0}); err != nil {
+		t.Fatalf("failed to bind socket: %v", err)
+	}
+
+	sa, err := c.Getsockname()
+	if err != nil {
+		t.Fatalf("failed to getsockname: %v", err)
+	}
+
+	// Send multiple datagrams to the bound socket.
+	const numMsgs = 4
+	for i := range numMsgs {
+		if err := c.Sendto(context.Background(), []byte{byte(i)}, 0, sa); err != nil {
+			t.Fatalf("failed to sendto[%d]: %v", i, err)
+		}
+	}
+
+	p := make([][]byte, numMsgs)
+	for i := range p {
+		p[i] = make([]byte, 64)
+	}
+
+	ctx := context.Background()
+	n, ns, _, _, err := c.Recvmmsg(ctx, p, nil, 0)
+	if err != nil {
+		t.Fatalf("Recvmmsg failed: %v", err)
+	}
+
+	if n != numMsgs {
+		t.Fatalf("expected %d messages in one recvmmsg call, got %d", numMsgs, n)
+	}
+
+	for i := range numMsgs {
+		if ns[i] != 1 {
+			t.Errorf("message %d: expected length 1, got %d", i, ns[i])
+		}
+		if p[i][0] != byte(i) {
+			t.Errorf("message %d: expected payload %d, got %d", i, i, p[i][0])
+		}
+	}
+}
+
+func TestRecvmmsgContextCanceled(t *testing.T) {
+	t.Parallel()
+
+	c, err := socket.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0, "udp4", nil)
+	if err != nil {
+		t.Fatalf("failed to open socket: %v", err)
+	}
+	defer c.Close()
+
+	if err := c.Bind(&unix.SockaddrInet4{Port: 0}); err != nil {
+		t.Fatalf("failed to bind socket: %v", err)
+	}
+
+	// Context will be canceled while blocked in recvmmsg.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	p := [][]byte{make([]byte, 64)}
+	_, _, _, _, err = c.Recvmmsg(ctx, p, nil, 0)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got: %v", err)
 	}
 }
