@@ -7,6 +7,8 @@
 - [Bug Fix]: context cancelation is now honored immediately for blocking
   operations when the context also carries a deadline; previously cancelation
   was not noticed until the deadline expired.
+- [Improvement]: bump build to Go 1.26.0. Package socket now supports Go 1.26
+  and Go 1.27, mirroring Go's own release policy.
 
 ## v0.5.2
 
