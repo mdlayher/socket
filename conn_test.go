@@ -235,6 +235,78 @@ func TestListenerAcceptTCPContextCanceledDuring(t *testing.T) {
 	}
 }
 
+func TestListenerAcceptTCPContextCanceledDuringWithDeadline(t *testing.T) {
+	t.Parallel()
+
+	l, err := sockettest.Listen(0, nil)
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer l.Close()
+
+	// Context carries both a distant deadline and is canceled early during a
+	// blocking operation. Cancelation must be honored immediately rather than
+	// waiting for the deadline to expire.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	_, err = l.Context(ctx).Accept()
+	elapsed := time.Since(start)
+
+	if diff := cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()); diff != "" {
+		t.Fatalf("unexpected accept error (-want +got):\n%s", diff)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("accept took %v to observe cancelation, expected immediate return", elapsed)
+	}
+
+	// The forced wakeup must not leave a stale deadline armed on the socket.
+	ctx, cancel = context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	_, err = l.Context(ctx).Accept()
+	if diff := cmp.Diff(context.DeadlineExceeded, err, cmpopts.EquateErrors()); diff != "" {
+		t.Fatalf("unexpected second accept error (-want +got):\n%s", diff)
+	}
+}
+
+func TestListenerAcceptTCPContextBackground(t *testing.T) {
+	t.Parallel()
+
+	l, err := sockettest.Listen(0, nil)
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer l.Close()
+
+	// A context which can never be canceled must still allow the operation
+	// to complete normally.
+	var eg errgroup.Group
+	eg.Go(func() error {
+		c, err := l.Context(context.Background()).Accept()
+		if err != nil {
+			return fmt.Errorf("failed to accept: %v", err)
+		}
+		return c.Close()
+	})
+
+	c, err := net.Dial(l.Addr().Network(), l.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to dial listener: %v", err)
+	}
+	defer c.Close()
+
+	if err := eg.Wait(); err != nil {
+		t.Fatalf("failed to accept with background context: %v", err)
+	}
+}
+
 func TestListenerAcceptTCPContextDeadlineExceeded(t *testing.T) {
 	t.Parallel()
 
@@ -329,6 +401,72 @@ func TestListenerConnTCPContextDeadlineExceeded(t *testing.T) {
 	// Client never sends data, so we wait until ctx cancel and errgroup return.
 	if diff := cmp.Diff(context.Canceled, eg.Wait(), cmpopts.EquateErrors()); diff != "" {
 		t.Fatalf("unexpected recvfrom error (-want +got):\n%s", diff)
+	}
+}
+
+func TestListenerConnTCPContextCanceledDuringWithDeadline(t *testing.T) {
+	t.Parallel()
+
+	l, err := sockettest.Listen(0, nil)
+	if err != nil {
+		t.Fatalf("failed to open listener: %v", err)
+	}
+	defer l.Close()
+
+	// Accept a single connection.
+	var eg errgroup.Group
+	eg.Go(func() error {
+		c, err := l.Accept()
+		if err != nil {
+			return fmt.Errorf("failed to accept: %v", err)
+		}
+		defer c.Close()
+
+		// Context carries both a distant deadline and is canceled early
+		// during recvmsg. Cancelation must be honored immediately rather than
+		// waiting for the deadline to expire.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			cancel()
+		}()
+
+		start := time.Now()
+		b := make([]byte, 1024)
+		_, _, _, _, err = c.(*sockettest.Conn).Conn.Recvmsg(ctx, b, nil, 0)
+		elapsed := time.Since(start)
+
+		if diff := cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()); diff != "" {
+			return fmt.Errorf("unexpected recvmsg error (-want +got):\n%s", diff)
+		}
+		if elapsed > 5*time.Second {
+			return fmt.Errorf("recvmsg took %v to observe cancelation, expected immediate return", elapsed)
+		}
+
+		// The forced wakeup must not leave a stale deadline armed on the
+		// socket.
+		ctx, cancel = context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+
+		_, _, _, _, err = c.(*sockettest.Conn).Conn.Recvmsg(ctx, b, nil, 0)
+		if diff := cmp.Diff(context.DeadlineExceeded, err, cmpopts.EquateErrors()); diff != "" {
+			return fmt.Errorf("unexpected second recvmsg error (-want +got):\n%s", diff)
+		}
+
+		return nil
+	})
+
+	c, err := net.Dial(l.Addr().Network(), l.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to dial listener: %v", err)
+	}
+	defer c.Close()
+
+	// Client never sends data, so we wait until ctx cancel and errgroup return.
+	if err := eg.Wait(); err != nil {
+		t.Fatal(err)
 	}
 }
 

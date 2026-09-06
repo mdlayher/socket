@@ -4,6 +4,9 @@
 
 - [New API]: add `Conn.SetsockoptBytes` and `Conn.GetsockoptBytes` for
   binary-safe byte-slice socket options on Linux.
+- [Bug Fix]: context cancelation is now honored immediately for blocking
+  operations when the context also carries a deadline; previously cancelation
+  was not noticed until the deadline expired.
 
 ## v0.5.2
 
