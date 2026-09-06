@@ -3,7 +3,9 @@
 package socket_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -209,5 +211,138 @@ func TestLinuxBindToDevice(t *testing.T) {
 	}
 	if diff := cmp.Diff(index, gotIndex); diff != "" {
 		t.Fatalf("unexpected interface index (-want +got):\n%s", diff)
+	}
+}
+
+func TestLinuxConnSockoptBytesRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	c, err := socket.Socket(unix.AF_INET, unix.SOCK_STREAM, 0, "tcpv4", nil)
+	if err != nil {
+		t.Fatalf("failed to open socket: %v", err)
+	}
+	defer c.Close()
+
+	// Set SO_RCVBUF as a raw 4-byte native-endian integer, then read it back
+	// both as raw bytes and as an integer and verify they agree. Per
+	// socket(7) the kernel doubles the value that was set.
+	const set = 8192
+	in := binary.NativeEndian.AppendUint32(nil, set)
+
+	if err := c.SetsockoptBytes(unix.SOL_SOCKET, unix.SO_RCVBUF, in); err != nil {
+		t.Fatalf("failed to set SO_RCVBUF bytes: %v", err)
+	}
+
+	want, err := c.GetsockoptInt(unix.SOL_SOCKET, unix.SO_RCVBUF)
+	if err != nil {
+		t.Fatalf("failed to get SO_RCVBUF int: %v", err)
+	}
+	if diff := cmp.Diff(set*2, want); diff != "" {
+		t.Fatalf("unexpected SO_RCVBUF int (-want +got):\n%s", diff)
+	}
+
+	out := make([]byte, 4)
+	n, err := c.GetsockoptBytes(unix.SOL_SOCKET, unix.SO_RCVBUF, out)
+	if err != nil {
+		t.Fatalf("failed to get SO_RCVBUF bytes: %v", err)
+	}
+	if diff := cmp.Diff(4, n); diff != "" {
+		t.Fatalf("unexpected SO_RCVBUF optlen (-want +got):\n%s", diff)
+	}
+
+	got := int(binary.NativeEndian.Uint32(out))
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("unexpected SO_RCVBUF bytes value (-want +got):\n%s", diff)
+	}
+}
+
+func TestLinuxConnGetsockoptBytesShortOptlen(t *testing.T) {
+	t.Parallel()
+
+	c, err := socket.Socket(unix.AF_INET, unix.SOCK_STREAM, 0, "tcpv4", nil)
+	if err != nil {
+		t.Fatalf("failed to open socket: %v", err)
+	}
+	defer c.Close()
+
+	want, err := c.GetsockoptInt(unix.SOL_SOCKET, unix.SO_SNDBUF)
+	if err != nil {
+		t.Fatalf("failed to get SO_SNDBUF int: %v", err)
+	}
+
+	// Pass a buffer larger than the option and fill the trailing bytes with a
+	// sentinel value: the kernel must report the true optlen and leave the
+	// bytes beyond it untouched.
+	out := bytes.Repeat([]byte{0xff}, 16)
+	n, err := c.GetsockoptBytes(unix.SOL_SOCKET, unix.SO_SNDBUF, out)
+	if err != nil {
+		t.Fatalf("failed to get SO_SNDBUF bytes: %v", err)
+	}
+	if diff := cmp.Diff(4, n); diff != "" {
+		t.Fatalf("unexpected SO_SNDBUF optlen (-want +got):\n%s", diff)
+	}
+
+	got := int(binary.NativeEndian.Uint32(out[:n]))
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("unexpected SO_SNDBUF bytes value (-want +got):\n%s", diff)
+	}
+
+	if diff := cmp.Diff(bytes.Repeat([]byte{0xff}, 12), out[n:]); diff != "" {
+		t.Fatalf("unexpected trailing bytes (-want +got):\n%s", diff)
+	}
+
+	// An unbound socket reports SO_BINDTODEVICE with optlen 0 and does not
+	// touch the buffer.
+	name := bytes.Repeat([]byte{0xff}, unix.IFNAMSIZ)
+	n, err = c.GetsockoptBytes(unix.SOL_SOCKET, unix.SO_BINDTODEVICE, name)
+	if err != nil {
+		t.Fatalf("failed to get SO_BINDTODEVICE bytes: %v", err)
+	}
+	if diff := cmp.Diff(0, n); diff != "" {
+		t.Fatalf("unexpected SO_BINDTODEVICE optlen (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(bytes.Repeat([]byte{0xff}, unix.IFNAMSIZ), name); diff != "" {
+		t.Fatalf("unexpected SO_BINDTODEVICE bytes (-want +got):\n%s", diff)
+	}
+}
+
+func TestLinuxConnSockoptBytesEmpty(t *testing.T) {
+	t.Parallel()
+
+	c, err := socket.Socket(unix.AF_INET, unix.SOCK_STREAM, 0, "tcpv4", nil)
+	if err != nil {
+		t.Fatalf("failed to open socket: %v", err)
+	}
+	defer c.Close()
+
+	for _, b := range [][]byte{nil, {}} {
+		// Empty buffers must pass a nil pointer with optlen 0 rather than
+		// panicking. The kernel rejects an integer option that is too short.
+		err := c.SetsockoptBytes(unix.SOL_SOCKET, unix.SO_RCVBUF, b)
+		if !errors.Is(err, unix.EINVAL) {
+			t.Fatalf("expected EINVAL from empty setsockopt, but got: %v", err)
+		}
+
+		// The kernel clamps optlen to the buffer size, so getsockopt with an
+		// empty buffer succeeds and reports optlen 0.
+		n, err := c.GetsockoptBytes(unix.SOL_SOCKET, unix.SO_RCVBUF, b)
+		if err != nil {
+			t.Fatalf("failed to get SO_RCVBUF with empty buffer: %v", err)
+		}
+		if diff := cmp.Diff(0, n); diff != "" {
+			t.Fatalf("unexpected empty getsockopt optlen (-want +got):\n%s", diff)
+		}
+	}
+
+	// Closed connections must report EBADF.
+	if err := c.Close(); err != nil {
+		t.Fatalf("failed to close: %v", err)
+	}
+
+	if err := c.SetsockoptBytes(unix.SOL_SOCKET, unix.SO_RCVBUF, []byte{0, 0, 0, 0}); !errors.Is(err, unix.EBADF) {
+		t.Fatalf("expected EBADF from closed setsockopt, but got: %v", err)
+	}
+	if _, err := c.GetsockoptBytes(unix.SOL_SOCKET, unix.SO_RCVBUF, make([]byte, 4)); !errors.Is(err, unix.EBADF) {
+		t.Fatalf("expected EBADF from closed getsockopt, but got: %v", err)
 	}
 }

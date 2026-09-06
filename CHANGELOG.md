@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## Unreleased
+
+- [New API]: add `Conn.SetsockoptBytes` and `Conn.GetsockoptBytes` for
+  binary-safe byte-slice socket options on Linux.
+
 ## v0.5.2
 
 - [Improvement]: Bump build to Go 1.23.0. Note this is required for the latest
