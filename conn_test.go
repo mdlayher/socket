@@ -12,11 +12,13 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/mdlayher/socket"
 	"github.com/mdlayher/socket/internal/sockettest"
 	"golang.org/x/net/nettest"
 	"golang.org/x/sync/errgroup"
@@ -527,6 +529,357 @@ func TestFileConn(t *testing.T) {
 	}
 }
 
+func TestConnReadFuncWriteFunc(t *testing.T) {
+	t.Parallel()
+
+	c1, c2 := socketPair(t)
+	ctx := context.Background()
+
+	// A write to an idle socket completes on the first call.
+	want := []byte("hello world")
+	var writes int
+	err := c1.WriteFunc(ctx, "write", func(fd int) error {
+		writes++
+		_, err := unix.Write(fd, want)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to write: %v", err)
+	}
+
+	if diff := cmp.Diff(1, writes); diff != "" {
+		t.Fatalf("unexpected number of write calls (-want +got):\n%s", diff)
+	}
+
+	// Data is already available so the read completes on the first call.
+	var (
+		b     = make([]byte, 64)
+		n     int
+		reads int
+	)
+
+	err = c2.ReadFunc(ctx, "read", func(fd int) error {
+		reads++
+		var err error
+		n, err = unix.Read(fd, b)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to read: %v", err)
+	}
+
+	if diff := cmp.Diff(1, reads); diff != "" {
+		t.Fatalf("unexpected number of read calls (-want +got):\n%s", diff)
+	}
+
+	if diff := cmp.Diff(want, b[:n]); diff != "" {
+		t.Fatalf("unexpected read bytes (-want +got):\n%s", diff)
+	}
+}
+
+func TestConnReadFuncWriteFuncError(t *testing.T) {
+	t.Parallel()
+
+	c1, _ := socketPair(t)
+	ctx := context.Background()
+
+	// Errors other than EAGAIN/EINTR/EINPROGRESS complete the operation
+	// immediately and are wrapped with the operation name.
+	var calls int
+	err := c1.ReadFunc(ctx, "readop", func(_ int) error {
+		calls++
+		return unix.EINVAL
+	})
+	checkSyscallError(t, "readop", unix.EINVAL, err)
+	if diff := cmp.Diff(1, calls); diff != "" {
+		t.Fatalf("unexpected number of read calls (-want +got):\n%s", diff)
+	}
+
+	calls = 0
+	err = c1.WriteFunc(ctx, "writeop", func(_ int) error {
+		calls++
+		return unix.EPERM
+	})
+	checkSyscallError(t, "writeop", unix.EPERM, err)
+	if diff := cmp.Diff(1, calls); diff != "" {
+		t.Fatalf("unexpected number of write calls (-want +got):\n%s", diff)
+	}
+}
+
+func TestConnReadFuncEAGAINRetry(t *testing.T) {
+	t.Parallel()
+
+	c1, c2 := socketPair(t)
+
+	// The socket is idle, so the first read reports EAGAIN and ReadFunc must
+	// wait for readiness and retry once the peer writes.
+	var (
+		b     = make([]byte, 64)
+		n     int
+		reads atomic.Int32
+		eg    errgroup.Group
+	)
+
+	attempted, signal := firstCall()
+	eg.Go(func() error {
+		return c2.ReadFunc(context.Background(), "read", func(fd int) error {
+			reads.Add(1)
+			var err error
+			n, err = unix.Read(fd, b)
+			signal()
+			return err
+		})
+	})
+
+	// Wait for the first EAGAIN attempt before making the socket readable.
+	<-attempted
+
+	want := []byte("hello world")
+	if _, err := c1.WriteContext(context.Background(), want); err != nil {
+		t.Fatalf("failed to write: %v", err)
+	}
+
+	if err := eg.Wait(); err != nil {
+		t.Fatalf("failed to read: %v", err)
+	}
+
+	if reads.Load() < 2 {
+		t.Fatalf("expected at least two read calls, but got: %d", reads.Load())
+	}
+
+	if diff := cmp.Diff(want, b[:n]); diff != "" {
+		t.Fatalf("unexpected read bytes (-want +got):\n%s", diff)
+	}
+}
+
+func TestConnWriteFuncEAGAINRetry(t *testing.T) {
+	t.Parallel()
+
+	c1, c2 := socketPair(t)
+
+	// Keep the buffers small so they fill quickly.
+	if err := c1.SetWriteBuffer(4096); err != nil {
+		t.Fatalf("failed to set write buffer: %v", err)
+	}
+
+	if err := c2.SetReadBuffer(4096); err != nil {
+		t.Fatalf("failed to set read buffer: %v", err)
+	}
+
+	fillWriteBuffer(t, c1)
+
+	// The kernel buffers are full, so the first write reports EAGAIN and
+	// WriteFunc must wait for readiness and retry once the peer drains data.
+	var (
+		writes atomic.Int32
+		eg     errgroup.Group
+	)
+
+	attempted, signal := firstCall()
+	eg.Go(func() error {
+		return c1.WriteFunc(context.Background(), "write", func(fd int) error {
+			writes.Add(1)
+			_, err := unix.Write(fd, []byte("hello world"))
+			signal()
+			return err
+		})
+	})
+
+	// Wait for the first EAGAIN attempt before draining the peer.
+	<-attempted
+
+	// Drain the peer until the writer completes.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		b := make([]byte, 64*1024)
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, err := c2.ReadContext(ctx, b)
+			cancel()
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	if err := eg.Wait(); err != nil {
+		t.Fatalf("failed to write: %v", err)
+	}
+
+	if writes.Load() < 2 {
+		t.Fatalf("expected at least two write calls, but got: %d", writes.Load())
+	}
+
+	// Closing the writer unblocks the drain goroutine with EOF.
+	_ = c1.Close()
+	<-done
+}
+
+func TestConnReadFuncContextCanceled(t *testing.T) {
+	t.Parallel()
+
+	_, c2 := socketPair(t)
+
+	// Context is canceled after the first blocked read attempt; the peer
+	// never writes.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	attempted, signal := firstCall()
+	go func() {
+		<-attempted
+		cancel()
+	}()
+
+	b := make([]byte, 64)
+	start := time.Now()
+	err := c2.ReadFunc(ctx, "read", func(fd int) error {
+		_, err := unix.Read(fd, b)
+		signal()
+		return err
+	})
+	elapsed := time.Since(start)
+
+	checkSyscallError(t, "read", context.Canceled, err)
+	if elapsed > 5*time.Second {
+		t.Fatalf("read took %v to observe cancelation, expected immediate return", elapsed)
+	}
+}
+
+func TestConnReadFuncContextDeadlineExceeded(t *testing.T) {
+	t.Parallel()
+
+	c1, c2 := socketPair(t)
+
+	// Context deadline expires during a blocked read; the peer never writes.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	b := make([]byte, 64)
+	err := c2.ReadFunc(ctx, "read", func(fd int) error {
+		_, err := unix.Read(fd, b)
+		return err
+	})
+	checkSyscallError(t, "read", context.DeadlineExceeded, err)
+
+	// The deadline must be disarmed for the next call: with data available
+	// and no context deadline, the read must succeed rather than failing
+	// immediately with a stale I/O timeout.
+	want := []byte("hello world")
+	if _, err := c1.WriteContext(context.Background(), want); err != nil {
+		t.Fatalf("failed to write: %v", err)
+	}
+
+	var n int
+	err = c2.ReadFunc(context.Background(), "read", func(fd int) error {
+		var err error
+		n, err = unix.Read(fd, b)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed to read after deadline: %v", err)
+	}
+
+	if diff := cmp.Diff(want, b[:n]); diff != "" {
+		t.Fatalf("unexpected read bytes (-want +got):\n%s", diff)
+	}
+
+	// And a subsequent blocked read with a fresh deadline observes only the
+	// new deadline.
+	ctx, cancel = context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	err = c2.ReadFunc(ctx, "read", func(fd int) error {
+		_, err := unix.Read(fd, b)
+		return err
+	})
+	checkSyscallError(t, "read", context.DeadlineExceeded, err)
+}
+
+func TestConnWriteFuncContextDeadlineExceeded(t *testing.T) {
+	t.Parallel()
+
+	c1, c2 := socketPair(t)
+
+	if err := c1.SetWriteBuffer(4096); err != nil {
+		t.Fatalf("failed to set write buffer: %v", err)
+	}
+
+	if err := c2.SetReadBuffer(4096); err != nil {
+		t.Fatalf("failed to set read buffer: %v", err)
+	}
+
+	fillWriteBuffer(t, c1)
+
+	// Context deadline expires during a blocked write; the peer never reads.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	err := c1.WriteFunc(ctx, "write", func(fd int) error {
+		_, err := unix.Write(fd, []byte("hello world"))
+		return err
+	})
+	checkSyscallError(t, "write", context.DeadlineExceeded, err)
+
+	// The deadline must be disarmed for the next call: a subsequent write
+	// with no context deadline waits for the peer to drain rather than
+	// failing immediately with a stale I/O timeout.
+	var eg errgroup.Group
+	attempted, signal := firstCall()
+	eg.Go(func() error {
+		return c1.WriteFunc(context.Background(), "write", func(fd int) error {
+			_, err := unix.Write(fd, []byte("hello world"))
+			signal()
+			return err
+		})
+	})
+
+	// Wait for the first EAGAIN attempt before draining the peer.
+	<-attempted
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		b := make([]byte, 64*1024)
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, err := c2.ReadContext(ctx, b)
+			cancel()
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	if err := eg.Wait(); err != nil {
+		t.Fatalf("failed to write after deadline: %v", err)
+	}
+
+	_ = c1.Close()
+	<-done
+}
+
+func TestConnReadFuncWriteFuncClosed(t *testing.T) {
+	t.Parallel()
+
+	c1, _ := socketPair(t)
+	if err := c1.Close(); err != nil {
+		t.Fatalf("failed to close: %v", err)
+	}
+
+	// After Close, neither function invokes f and both report EBADF.
+	err := c1.ReadFunc(context.Background(), "read", func(_ int) error {
+		panic("f must not be called after Close")
+	})
+	checkSyscallError(t, "read", unix.EBADF, err)
+
+	err = c1.WriteFunc(context.Background(), "write", func(_ int) error {
+		panic("f must not be called after Close")
+	})
+	checkSyscallError(t, "write", unix.EBADF, err)
+}
+
 // Use our TCP net.Listener and net.Conn implementations backed by *socket.Conn
 // and run compliance tests with nettest.TestConn.
 //
@@ -669,4 +1022,92 @@ func chunkedCopy(w io.Writer, r io.Reader) error {
 	b := make([]byte, 1024)
 	_, err := io.CopyBuffer(struct{ io.Writer }{w}, struct{ io.Reader }{r}, b)
 	return err
+}
+
+// socketPair creates a pair of connected AF_UNIX stream Conns for tests. Both
+// are closed when the test completes.
+func socketPair(t *testing.T) (c1, c2 *socket.Conn) {
+	t.Helper()
+
+	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("failed to create socketpair: %v", err)
+	}
+
+	c1, err = socket.New(fds[0], "unix-1")
+	if err != nil {
+		t.Fatalf("failed to wrap first fd: %v", err)
+	}
+
+	t.Cleanup(func() { _ = c1.Close() })
+
+	c2, err = socket.New(fds[1], "unix-2")
+	if err != nil {
+		t.Fatalf("failed to wrap second fd: %v", err)
+	}
+
+	t.Cleanup(func() { _ = c2.Close() })
+
+	return c1, c2
+}
+
+// fillWriteBuffer writes to c until the kernel reports EAGAIN, so that a
+// subsequent write must wait for the peer to drain data.
+func fillWriteBuffer(t *testing.T, c *socket.Conn) {
+	t.Helper()
+
+	rc, err := c.SyscallConn()
+	if err != nil {
+		t.Fatalf("failed to get raw conn: %v", err)
+	}
+
+	b := make([]byte, 64*1024)
+	err = rc.Control(func(fd uintptr) {
+		for {
+			_, werr := unix.Write(int(fd), b)
+			switch werr {
+			case nil, unix.EINTR:
+				continue
+			case unix.EAGAIN:
+				return
+			default:
+				t.Errorf("unexpected error filling write buffer: %v", werr)
+				return
+			}
+		}
+	})
+	if err != nil {
+		t.Fatalf("failed to fill write buffer: %v", err)
+	}
+}
+
+// firstCall returns a channel which is closed the first time signal is
+// invoked, so tests can wait until a blocked ReadFunc or WriteFunc has made
+// its initial attempt before acting on the peer.
+func firstCall() (attempted <-chan struct{}, signal func()) {
+	var (
+		once sync.Once
+		ch   = make(chan struct{})
+	)
+
+	return ch, func() { once.Do(func() { close(ch) }) }
+}
+
+// checkSyscallError verifies that err is an *os.SyscallError for op which
+// wraps want.
+func checkSyscallError(t *testing.T, op string, want, err error) {
+	t.Helper()
+
+	var serr *os.SyscallError
+	if !errors.As(err, &serr) {
+		t.Fatalf("expected *os.SyscallError, but got: %T: %v", err, err)
+	}
+
+	if diff := cmp.Diff(op, serr.Syscall); diff != "" {
+		t.Fatalf("unexpected syscall name (-want +got):\n%s", diff)
+	}
+
+	if diff := cmp.Diff(want, serr.Err, cmpopts.EquateErrors()); diff != "" {
+		t.Fatalf("unexpected wrapped error (-want +got):\n%s", diff)
+	}
 }

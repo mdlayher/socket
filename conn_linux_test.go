@@ -13,6 +13,8 @@ import (
 	"os"
 	"runtime"
 	"testing"
+	"time"
+	"unsafe"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/mdlayher/socket"
@@ -344,5 +346,74 @@ func TestLinuxConnSockoptBytesEmpty(t *testing.T) {
 	}
 	if _, err := c.GetsockoptBytes(unix.SOL_SOCKET, unix.SO_RCVBUF, make([]byte, 4)); !errors.Is(err, unix.EBADF) {
 		t.Fatalf("expected EBADF from closed getsockopt, but got: %v", err)
+	}
+}
+
+func TestLinuxConnIoctl(t *testing.T) {
+	t.Parallel()
+
+	c, err := socket.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0, "udpv4", nil)
+	if err != nil {
+		t.Fatalf("failed to open socket: %v", err)
+	}
+
+	defer c.Close()
+
+	if err := c.Bind(&unix.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		t.Fatalf("failed to bind: %v", err)
+	}
+
+	sa, err := c.Getsockname()
+	if err != nil {
+		t.Fatalf("failed to get sockname: %v", err)
+	}
+
+	// Send a datagram to ourselves and wait for it to arrive so SIOCINQ has
+	// something to report.
+	want := []byte("hello world")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := c.Sendto(ctx, want, 0, sa); err != nil {
+		t.Fatalf("failed to sendto: %v", err)
+	}
+
+	b := make([]byte, 64)
+	if _, _, err := c.Recvfrom(ctx, b, unix.MSG_PEEK); err != nil {
+		t.Fatalf("failed to peek: %v", err)
+	}
+
+	// Success path: SIOCINQ (FIONREAD) reports the size of the pending datagram.
+	var n int32
+	if err := c.Ioctl(unix.SIOCINQ, unsafe.Pointer(&n)); err != nil {
+		t.Fatalf("failed to ioctl SIOCINQ: %v", err)
+	}
+
+	if diff := cmp.Diff(int32(len(want)), n); diff != "" {
+		t.Fatalf("unexpected SIOCINQ bytes (-want +got):\n%s", diff)
+	}
+
+	// Errno path: request 0 is not a valid socket ioctl.
+	err = c.Ioctl(0, nil)
+	var serr *os.SyscallError
+	if !errors.As(err, &serr) {
+		t.Fatalf("expected *os.SyscallError, but got: %T: %v", err, err)
+	}
+
+	if diff := cmp.Diff("ioctl", serr.Syscall); diff != "" {
+		t.Fatalf("unexpected syscall name (-want +got):\n%s", diff)
+	}
+
+	if !errors.Is(err, unix.ENOTTY) && !errors.Is(err, unix.EINVAL) {
+		t.Fatalf("expected ENOTTY or EINVAL, but got: %v", err)
+	}
+
+	// Closed Conn: EBADF without touching the kernel.
+	if err := c.Close(); err != nil {
+		t.Fatalf("failed to close: %v", err)
+	}
+
+	if err := c.Ioctl(unix.SIOCINQ, unsafe.Pointer(&n)); !errors.Is(err, unix.EBADF) {
+		t.Fatalf("expected EBADF after close, but got: %v", err)
 	}
 }
