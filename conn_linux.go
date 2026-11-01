@@ -4,6 +4,7 @@ package socket
 
 import (
 	"context"
+	"math"
 	"os"
 	"unsafe"
 
@@ -59,11 +60,11 @@ func (c *Conn) PidfdSendSignal(sig unix.Signal, info *unix.Siginfo, flags int) e
 	})
 }
 
-// SetBPF attaches an assembled BPF program to a Conn.
+// SetBPF attaches an assembled BPF program to a Conn. Empty programs and programs
+// whose length does not fit in the kernel's uint16 field return EINVAL.
 func (c *Conn) SetBPF(filter []bpf.RawInstruction) error {
-	// We can't point to the first instruction in the array if no instructions
-	// are present.
-	if len(filter) == 0 {
+	// We need an instruction pointer and a length representable by SockFprog.Len.
+	if len(filter) == 0 || len(filter) > math.MaxUint16 {
 		return os.NewSyscallError("setsockopt", unix.EINVAL)
 	}
 

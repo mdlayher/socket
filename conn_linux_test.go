@@ -19,9 +19,30 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/mdlayher/socket"
 	"github.com/mdlayher/socket/internal/sockettest"
+	"golang.org/x/net/bpf"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
 )
+
+func TestLinuxSetBPFRejectsLengthOverflow(t *testing.T) {
+	c, err := socket.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0, "udp", nil)
+	if err != nil {
+		t.Fatalf("failed to open socket: %v", err)
+	}
+	defer c.Close()
+
+	// A generated program must not be narrowed to a valid one-instruction prefix.
+	filter := make([]bpf.RawInstruction, 1<<16+1)
+	filter[0] = bpf.RawInstruction{Op: 0x06, K: math.MaxUint32} // ret #0xffffffff
+
+	if err := c.SetBPF(filter); !errors.Is(err, unix.EINVAL) {
+		t.Fatalf("oversized filter: got %v, want EINVAL", err)
+	}
+
+	if err := c.SetBPF(filter[:1]); err != nil {
+		t.Fatalf("valid filter: %v", err)
+	}
+}
 
 func TestLinuxConnBuffers(t *testing.T) {
 	t.Parallel()
