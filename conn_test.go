@@ -21,7 +21,6 @@ import (
 	"github.com/mdlayher/socket"
 	"github.com/mdlayher/socket/internal/sockettest"
 	"golang.org/x/net/nettest"
-	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
 )
 
@@ -289,7 +288,7 @@ func TestListenerAcceptTCPContextBackground(t *testing.T) {
 
 	// A context which can never be canceled must still allow the operation
 	// to complete normally.
-	var eg errgroup.Group
+	var eg errGroup
 	eg.Go(func() error {
 		c, err := l.Context(context.Background()).Accept()
 		if err != nil {
@@ -338,7 +337,7 @@ func TestListenerConnTCPContextCanceled(t *testing.T) {
 	defer l.Close()
 
 	// Accept a single connection.
-	var eg errgroup.Group
+	var eg errGroup
 	eg.Go(func() error {
 		c, err := l.Accept()
 		if err != nil {
@@ -377,7 +376,7 @@ func TestListenerConnTCPContextDeadlineExceeded(t *testing.T) {
 	defer l.Close()
 
 	// Accept a single connection.
-	var eg errgroup.Group
+	var eg errGroup
 	eg.Go(func() error {
 		c, err := l.Accept()
 		if err != nil {
@@ -416,7 +415,7 @@ func TestListenerConnTCPContextCanceledDuringWithDeadline(t *testing.T) {
 	defer l.Close()
 
 	// Accept a single connection.
-	var eg errgroup.Group
+	var eg errGroup
 	eg.Go(func() error {
 		c, err := l.Accept()
 		if err != nil {
@@ -507,7 +506,7 @@ func TestFileConn(t *testing.T) {
 	// To exercise the listener, attempt to accept and then immediately close a
 	// single TCPv6 connection. Dial to the listener from the main goroutine and
 	// wait for everything to finish.
-	var eg errgroup.Group
+	var eg errGroup
 	eg.Go(func() error {
 		c, err := l.Accept()
 		if err != nil {
@@ -617,7 +616,7 @@ func TestConnReadFuncEAGAINRetry(t *testing.T) {
 		b     = make([]byte, 64)
 		n     int
 		reads atomic.Int32
-		eg    errgroup.Group
+		eg    errGroup
 	)
 
 	attempted, signal := firstCall()
@@ -672,7 +671,7 @@ func TestConnWriteFuncEAGAINRetry(t *testing.T) {
 	// WriteFunc must wait for readiness and retry once the peer drains data.
 	var (
 		writes atomic.Int32
-		eg     errgroup.Group
+		eg     errGroup
 	)
 
 	attempted, signal := firstCall()
@@ -825,7 +824,7 @@ func TestConnWriteFuncContextDeadlineExceeded(t *testing.T) {
 	// The deadline must be disarmed for the next call: a subsequent write
 	// with no context deadline waits for the peer to drain rather than
 	// failing immediately with a stale I/O timeout.
-	var eg errgroup.Group
+	var eg errGroup
 	attempted, signal := firstCall()
 	eg.Go(func() error {
 		return c1.WriteFunc(context.Background(), "write", func(fd int) error {

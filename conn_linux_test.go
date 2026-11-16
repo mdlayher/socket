@@ -19,7 +19,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/mdlayher/socket"
 	"github.com/mdlayher/socket/internal/sockettest"
-	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
 )
 
@@ -86,7 +85,7 @@ func TestLinuxNetworkNamespaces(t *testing.T) {
 
 	addrC := make(chan net.Addr, 1)
 
-	var eg errgroup.Group
+	var eg errGroup
 	eg.Go(func() error {
 		// We are poisoning this thread by creating a new anonymous network
 		// namespace. Do not unlock the OS thread so that the runtime will kill

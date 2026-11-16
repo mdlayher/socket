@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"sync"
 
-	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
 )
 
@@ -20,12 +20,8 @@ var errNetNSDisabled = errors.New("socket: Linux network namespaces are not enab
 // fd, while also managing the logic required to safely do so by manipulating
 // thread-local state.
 func withNetNS(fd int, fn func() (*Conn, error)) (*Conn, error) {
-	var (
-		eg   errgroup.Group
-		conn *Conn
-	)
-
-	eg.Go(func() error {
+	var conn *Conn
+	create := func() error {
 		// Retrieve and store the calling OS thread's network namespace so the
 		// thread can be reassigned to it after creating a socket in another network
 		// namespace.
@@ -65,9 +61,19 @@ func withNetNS(fd int, fn func() (*Conn, error)) (*Conn, error) {
 		runtime.UnlockOSThread()
 		conn = c
 		return err
-	})
+	}
 
-	if err := eg.Wait(); err != nil {
+	// Run create on its own goroutine: if the original namespace cannot be
+	// restored, the goroutine exits with its OS thread still locked and the
+	// runtime terminates that thread.
+	var (
+		wg  sync.WaitGroup
+		err error
+	)
+	wg.Go(func() { err = create() })
+	wg.Wait()
+
+	if err != nil {
 		return nil, err
 	}
 
